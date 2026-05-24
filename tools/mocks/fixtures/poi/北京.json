@@ -1,0 +1,17 @@
+[
+  {"name": "故宫博物院", "type": "景点", "area": "东城", "lng": 116.397, "lat": 39.917, "rating": 4.8, "duration_minutes": 240, "ticket_price": 60, "indoor": false, "suitable_for_kids": true},
+  {"name": "天坛公园", "type": "景点", "area": "东城", "lng": 116.412, "lat": 39.882, "rating": 4.7, "duration_minutes": 150, "ticket_price": 30, "indoor": false, "suitable_for_kids": true},
+  {"name": "颐和园", "type": "景点", "area": "海淀", "lng": 116.265, "lat": 39.999, "rating": 4.7, "duration_minutes": 240, "ticket_price": 30, "indoor": false, "suitable_for_kids": true},
+  {"name": "八达岭长城", "type": "景点", "area": "延庆", "lng": 116.016, "lat": 40.355, "rating": 4.6, "duration_minutes": 240, "ticket_price": 40, "indoor": false, "suitable_for_kids": true},
+  {"name": "南锣鼓巷", "type": "购物", "area": "东城", "lng": 116.404, "lat": 39.937, "rating": 4.3, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "簋街", "type": "餐厅", "area": "东城", "lng": 116.428, "lat": 39.940, "rating": 4.4, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "什刹海", "type": "景点", "area": "西城", "lng": 116.388, "lat": 39.943, "rating": 4.5, "duration_minutes": 120, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "国家博物馆", "type": "景点", "area": "东城", "lng": 116.398, "lat": 39.903, "rating": 4.7, "duration_minutes": 180, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "798艺术区", "type": "体验", "area": "朝阳", "lng": 116.494, "lat": 39.984, "rating": 4.4, "duration_minutes": 150, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "鸟巢国家体育场", "type": "景点", "area": "朝阳", "lng": 116.397, "lat": 39.992, "rating": 4.5, "duration_minutes": 120, "ticket_price": 80, "indoor": false, "suitable_for_kids": true},
+  {"name": "北京动物园", "type": "景点", "area": "西城", "lng": 116.336, "lat": 39.940, "rating": 4.5, "duration_minutes": 180, "ticket_price": 15, "indoor": false, "suitable_for_kids": true},
+  {"name": "全聚德烤鸭店", "type": "餐厅", "area": "东城", "lng": 116.403, "lat": 39.910, "rating": 4.3, "duration_minutes": 90, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "稻香村点心", "type": "餐厅", "area": "西城", "lng": 116.380, "lat": 39.910, "rating": 4.4, "duration_minutes": 30, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "三里屯太古里", "type": "购物", "area": "朝阳", "lng": 116.453, "lat": 39.937, "rating": 4.4, "duration_minutes": 120, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "北京欢乐谷", "type": "体验", "area": "朝阳", "lng": 116.494, "lat": 39.864, "rating": 4.5, "duration_minutes": 360, "ticket_price": 260, "indoor": false, "suitable_for_kids": true}
+]

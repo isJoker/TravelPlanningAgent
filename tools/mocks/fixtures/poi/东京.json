@@ -1,0 +1,17 @@
+[
+  {"name": "浅草寺", "type": "景点", "area": "浅草", "lng": 139.797, "lat": 35.715, "rating": 4.6, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "东京晴空塔", "type": "景点", "area": "押上", "lng": 139.811, "lat": 35.710, "rating": 4.5, "duration_minutes": 120, "ticket_price": 200, "indoor": true, "suitable_for_kids": true},
+  {"name": "涉谷十字路口", "type": "景点", "area": "涉谷", "lng": 139.700, "lat": 35.659, "rating": 4.4, "duration_minutes": 60, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "明治神宫", "type": "景点", "area": "原宿", "lng": 139.699, "lat": 35.676, "rating": 4.6, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "上野动物园", "type": "景点", "area": "上野", "lng": 139.770, "lat": 35.717, "rating": 4.4, "duration_minutes": 180, "ticket_price": 30, "indoor": false, "suitable_for_kids": true},
+  {"name": "东京迪士尼海洋", "type": "体验", "area": "舞滨", "lng": 139.886, "lat": 35.626, "rating": 4.8, "duration_minutes": 480, "ticket_price": 600, "indoor": false, "suitable_for_kids": true},
+  {"name": "秋叶原电器街", "type": "购物", "area": "秋叶原", "lng": 139.773, "lat": 35.700, "rating": 4.4, "duration_minutes": 120, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "新宿御苑", "type": "景点", "area": "新宿", "lng": 139.710, "lat": 35.685, "rating": 4.6, "duration_minutes": 120, "ticket_price": 30, "indoor": false, "suitable_for_kids": true},
+  {"name": "筑地外市场", "type": "餐厅", "area": "筑地", "lng": 139.770, "lat": 35.665, "rating": 4.5, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "豊洲市场寿司大", "type": "餐厅", "area": "豊洲", "lng": 139.777, "lat": 35.645, "rating": 4.6, "duration_minutes": 60, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "六本木之丘展望台", "type": "景点", "area": "六本木", "lng": 139.730, "lat": 35.660, "rating": 4.5, "duration_minutes": 90, "ticket_price": 130, "indoor": true, "suitable_for_kids": true},
+  {"name": "TeamLab Borderless", "type": "体验", "area": "御台场", "lng": 139.785, "lat": 35.625, "rating": 4.7, "duration_minutes": 180, "ticket_price": 220, "indoor": true, "suitable_for_kids": true},
+  {"name": "皇居东御苑", "type": "景点", "area": "千代田", "lng": 139.754, "lat": 35.685, "rating": 4.4, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "原宿竹下通", "type": "购物", "area": "原宿", "lng": 139.703, "lat": 35.671, "rating": 4.3, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "一兰拉面·涉谷店", "type": "餐厅", "area": "涉谷", "lng": 139.701, "lat": 35.660, "rating": 4.4, "duration_minutes": 45, "ticket_price": 0, "indoor": true, "suitable_for_kids": true}
+]
