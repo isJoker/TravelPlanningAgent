@@ -1,0 +1,36 @@
+# ===== Core =====
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+loguru==0.7.2
+
+# ===== LangGraph / LangChain (1.0 GA — released Oct 2025) =====
+# Pinned to the 1.x major series; the 0.x APIs are no longer used.
+langgraph>=1.0,<2
+langchain>=1.0,<2
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
+
+# ===== Templates / Rendering =====
+jinja2==3.1.4
+markdown==3.7
+pyyaml==6.0.2
+
+# ===== Utilities =====
+faker==30.0.0
+cachetools==5.5.0
+httpx==0.27.2
+
+# ===== Optional: PDF rendering =====
+# The PDF renderer auto-selects the best available engine; install ANY one
+# of the options below to enable PDF output. Without any of them, only
+# Markdown is produced (the demo gracefully falls back).
+#
+#   macOS    : brew install pandoc && brew install --cask mactex     (preferred)
+#   Linux    : sudo apt install pandoc texlive-xetex                  (preferred)
+#   Windows  : pip install pywin32   (uses MS Word COM, highest quality)
+#   Any OS   : pip install weasyprint   (pure-python fallback;
+#              on macOS also: brew install pango cairo gdk-pixbuf libffi)
+# weasyprint==62.3

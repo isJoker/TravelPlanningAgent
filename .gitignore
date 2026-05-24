@@ -1,0 +1,52 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.Python
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Editor / OS =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ===== Env / Secrets =====
+.env
+.env.*.local
+.env.local
+
+# ===== Runtime artifacts =====
+output/
+updated/
+checkpoints.db
+*.log
+
+# ===== Frontend =====
+ui/node_modules/
+ui/dist/
+ui/.vite/
+ui/coverage/
+ui/.env
+ui/.env.local
+
+# ===== Misc =====
+*.bak
+*.tmp
