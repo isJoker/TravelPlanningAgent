@@ -1,15 +1,26 @@
-# Travel Planning Agent
+<div align="center">
 
-**English** | [简体中文](./README.md)
+# ✈️ TravelPlanningAgent
 
-<img width="3492" height="2002" alt="2c6132c78bb436d6ed0d013dea0c8bae" src="https://github.com/user-attachments/assets/54f1f38e-d5a9-4abb-8f01-be1c8085ff07" />
-<img width="3490" height="2008" alt="359a38a2b9cdd831970f59a341f52339" src="https://github.com/user-attachments/assets/7f6b3418-4a21-4ae4-8001-67f7d28c6ff5" />
+### A multi-agent travel planner powered by LangGraph
 
-> An end-to-end runnable **AI Agent demo**: FastAPI + LangGraph 1.0 backend, Vue 3 frontend.
-> Submit a travel request via natural language or a form; the agent runs **weather / flights / hotels / POI / itinerary planning / budget / self-review / PDF export**,
-> streaming **graph nodes / tool calls / chain-of-thought** to the UI in real time over WebSocket, with full **multi-turn refinement** support.
+Submit your trip in one sentence or a single form. The agent runs **multi-source data aggregation + itinerary orchestration + self-review + Markdown / PDF report generation**,<br/>
+streaming **graph nodes / tool calls / chain-of-thought** over WebSocket in real time, with full **multi-turn refinement** and **zero-key MOCK mode**.
 
-✈️ Runs **fully offline with zero API keys** in MOCK mode. Switching to GPT-4o + real APIs is just env vars.
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.0+-1C3C3C)](https://langchain-ai.github.io/langgraph/)
+[![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](./LICENSE)
+
+**English** · [简体中文](./README.md)
+
+</div>
+
+<p align="center">
+  <img width="80%" alt="welcome screen" src="https://github.com/user-attachments/assets/54f1f38e-d5a9-4abb-8f01-be1c8085ff07" />
+  <img width="80%" alt="chat stream with thought process" src="https://github.com/user-attachments/assets/7f6b3418-4a21-4ae4-8001-67f7d28c6ff5" />
+</p>
 
 ---
 
