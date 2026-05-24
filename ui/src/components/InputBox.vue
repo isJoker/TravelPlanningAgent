@@ -62,7 +62,11 @@ function onEnter(e: KeyboardEvent) {
 
 <template>
   <div class="input-wrap">
-    <TripFormInline v-if="showForm" v-model="form" />
+    <TripFormInline
+      v-if="showForm"
+      :model-value="form"
+      @update:model-value="(v) => Object.assign(form, v)"
+    />
     <div class="input-card">
       <textarea
         v-model="text"

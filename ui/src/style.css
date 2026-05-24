@@ -28,6 +28,7 @@ body {
   font-size: 14px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  overflow: hidden;
 }
 
 button {
@@ -70,6 +71,8 @@ a:hover { text-decoration: underline; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* ---------- typography ---------- */
@@ -223,6 +226,7 @@ a:hover { text-decoration: underline; }
   padding: 12px 24px 20px;
   border-top: 1px solid var(--border);
   background: var(--bg);
+  flex-shrink: 0;
 }
 .input-card {
   background: var(--bg-card);
@@ -263,7 +267,7 @@ a:hover { text-decoration: underline; }
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
-  padding: 10px 14px 0 14px;
+  padding: 10px 14px 12px 14px;
 }
 .form-inline .field {
   display: flex;
@@ -372,6 +376,7 @@ a:hover { text-decoration: underline; }
   padding: 12px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+  flex-shrink: 0;
 }
 .topbar .brand {
   display: flex;
