@@ -263,7 +263,7 @@ a:hover { text-decoration: underline; }
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
-  padding: 10px 14px 0 14px;
+  padding: 10px 14px 12px 14px;
 }
 .form-inline .field {
   display: flex;
