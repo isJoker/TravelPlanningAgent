@@ -1,9 +1,10 @@
 # 智能旅行助手 Agent — 技术方案
 
-> 版本: v0.2 (设计稿，含决策更新)
+> 版本: v0.3 (设计稿，迁移至 LangChain / LangGraph 1.0 新版 API)
 > 编写日期: 2026-05-24
 > 适用范围: 基于 LangGraph 的旅行规划 Agent，输出行程 PDF
 > 主架构: **异步任务 + SSE 进度推送 + 多轮调整 + Mock-to-Real 数据源切换**
+> 框架基线: **`langgraph>=1.0` + `langchain>=1.0`**（2025-10 GA 起的稳定大版本，承诺到 2.0 之前不引入破坏性变更）
 
 ---
 
@@ -15,6 +16,7 @@
 | D-02 | 机票 / 酒店初期使用 Mock 数据 | ✅ 已确认 | 通过 `USE_MOCK_TOOLS=true` 切换；真实 API 接入方案保留在第 5 章中，可一行配置切换 |
 | D-03 | 支持多轮调整 | ✅ 已确认 | 增加 `refine` 子图，按用户指令做最小化重算；State 通过 Redis Checkpointer 持久化 |
 | D-04 | 主架构使用异步 | ✅ 已确认 | `POST` 立即返回 `trip_id`，通过 SSE 推送节点级进度；同步模式仅为 debug 选项 |
+| D-05 | **使用 LangChain 1.0 + LangGraph 1.0 新版 API** | ✅ 已确认 | `langchain>=1.0`、`langgraph>=1.0`、`langchain-core>=1.0`；LLM 用 `init_chat_model`；图层用 `StateGraph(state, context_schema=...)` + `Runtime[Ctx]`；任何 ReAct 子 Agent 用 `langchain.agents.create_agent`（不再用 `langgraph.prebuilt.create_react_agent`）；横切关注点（PII、Token 限制、人审）用 v1 Middleware 实现 |
 
 ---
 
@@ -135,47 +137,108 @@ Agent 自动完成 **天气查询 / 机票查询 / 酒店查询 / 景点攻略 /
 
 | 类别 | 选型 | 理由 |
 |------|------|------|
-| 语言 | Python 3.11+ | LangGraph 原生支持 |
-| Agent 框架 | LangGraph 0.2+ + LangChain | 状态机模型适合工作流型 Agent |
-| LLM | **OpenAI GPT-4o（默认）** / DeepSeek-V3 / Qwen-Max（备选） | 通过 LLM Provider 抽象，可替换；默认走 GPT-4o，质量优先 |
+| 语言 | Python 3.11+ | LangGraph / LangChain 1.0 原生支持，要求 ≥ 3.10 |
+| Agent 框架 | **`langgraph>=1.0` + `langchain>=1.0`** | 1.0 GA 稳定版（2025-10）：`StateGraph` / `START` / `END` / 并行 fan-out / 条件边 / Send API 全部保持兼容；新增 **`context_schema`** + **`Runtime[Ctx]`**（类型化运行时依赖注入）和 **Middleware**（横切关注点） |
+| LLM 客户端 | **`init_chat_model`**（`langchain.chat_models`）+ `langchain-openai` / `langchain-deepseek` / `langchain-community` | v1 推荐的统一入口；天然支持 `with_structured_output(Schema)`、`with_fallbacks([...])`、`bind_tools([...])`、`astream_events` |
+| LLM | **OpenAI GPT-4o（默认）** / DeepSeek-V3 / Qwen-Max（备选） | 通过 `init_chat_model(model_provider=...)` 一键切换；默认 GPT-4o，质量优先；走 `with_fallbacks` 串联兜底 |
+| 子 Agent（按需） | **`langchain.agents.create_agent`** | v1 标准 Agent 工厂，替代旧的 `langgraph.prebuilt.create_react_agent`；自带 ReAct 循环 + 工具节点 + 中间件挂载点；用于 `freeform` refine 等少数需要工具调用循环的节点 |
 | Web 框架 | FastAPI + Uvicorn | 异步 / SSE / OpenAPI |
 | 任务队列 | **Celery + Redis Broker**（主） / FastAPI BackgroundTasks（开发） | 多 worker、重试、限流，生产级 |
-| 数据校验 | Pydantic v2 | 与 LangGraph State 天然集成 |
+| 数据校验 | Pydantic v2 | LangChain 1.0 / LangGraph 1.0 全面 Pydantic v2；与 `with_structured_output` 天然集成 |
 | 持久化 | Redis（State / Cache / Broker）+ SQLite（任务/结果元数据） | 轻量、易部署 |
-| Checkpointer | LangGraph `RedisSaver` | 多轮调整必需 |
+| Checkpointer | **`langgraph.checkpoint.redis.aio.AsyncRedisSaver`**（`langgraph-checkpoint-redis>=0.4`） | v1 推荐异步实现；多轮调整必需 |
 | PDF 渲染 | Jinja2 + WeasyPrint | HTML/CSS 模板，样式可控；中文友好 |
-| 可观测 | LangSmith + Loguru + OpenTelemetry | Trace / 日志 / 指标 |
+| 可观测 | LangSmith + Loguru + OpenTelemetry | v1 LangSmith trace 自动透传 `thread_id` / `run_id`；每个节点 / 每次工具调用 / 每个中间件都是独立 span |
 | 配置 | pydantic-settings + .env | 12-factor |
 | 包管理 | uv（首选）/ poetry | 锁定版本 |
 | 容器 | Docker + docker-compose | 本地与部署一致 |
 
-### 3.3 LLM Provider 抽象
+**核心依赖版本基线（`pyproject.toml`）**：
 
-为了让"默认 GPT-4o + 兜底其他模型"在代码上可控，定义统一抽象：
+```toml
+[project]
+requires-python = ">=3.11"
+dependencies = [
+  "langchain>=1.0,<2.0",                     # v1 稳定基线，含 langchain.agents.create_agent
+  "langchain-core>=1.0,<2.0",
+  "langgraph>=1.0,<2.0",                     # 含 context_schema / Runtime[Ctx]
+  "langgraph-checkpoint-redis>=0.4",         # AsyncRedisSaver
+  "langchain-openai>=1.0",                   # GPT-4o
+  "langchain-deepseek>=0.1",                 # 兜底
+  "langsmith>=0.4",
+  "pydantic>=2.7,<3",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "celery[redis]>=5.4",
+  "redis>=5.0",
+  "weasyprint>=62",
+  "jinja2>=3.1",
+  "pydantic-settings>=2.5",
+  "loguru>=0.7",
+  "opentelemetry-sdk>=1.27",
+]
+```
+
+### 3.3 LLM Provider 抽象（基于 `init_chat_model`）
+
+LangChain 1.0 提供了统一的 `init_chat_model` 入口，配合 Runnable 的 `with_fallbacks` / `with_retry` / `with_structured_output`，**不再需要自己写 Provider 抽象层**。
 
 ```python
 # app/core/llm.py
-class LLMProvider(Protocol):
-    async def chat(self, messages, **kwargs) -> str: ...
-    async def chat_json(self, messages, schema, **kwargs) -> dict: ...
+from typing import Type
+from pydantic import BaseModel
+from langchain.chat_models import init_chat_model      # v1 统一入口
+from langchain_core.runnables import Runnable
 
-def build_llm() -> LLMProvider:
-    return FallbackLLM(
-        primary  = OpenAIProvider(model=settings.LLM_MODEL),         # gpt-4o
-        fallback = DeepSeekProvider(model="deepseek-chat") if settings.LLM_FALLBACK_PROVIDER else None,
-        retry    = ExponentialBackoff(max_attempts=3),
+from app.core.config import settings
+
+
+def _build_one(provider: str, model: str, **extra) -> Runnable:
+    return init_chat_model(
+        model=model,
+        model_provider=provider,                       # openai | deepseek | qwen | anthropic ...
+        temperature=settings.LLM_TEMPERATURE,
+        timeout=settings.LLM_TIMEOUT_SECONDS,
+        max_retries=settings.LLM_MAX_RETRIES,
+        **extra,
     )
+
+
+def build_llm(*, structured: Type[BaseModel] | None = None) -> Runnable:
+    """主 LLM：v1 推荐方式 = init_chat_model + with_fallbacks + with_structured_output"""
+    primary = _build_one(
+        settings.LLM_PROVIDER, settings.LLM_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL or None,
+    )
+
+    fallbacks: list[Runnable] = []
+    if settings.LLM_FALLBACK_PROVIDER:
+        fallbacks.append(_build_one(
+            settings.LLM_FALLBACK_PROVIDER,
+            settings.LLM_FALLBACK_MODEL or "deepseek-chat",
+            api_key=settings.DEEPSEEK_API_KEY,
+        ))
+
+    llm = primary.with_fallbacks(fallbacks) if fallbacks else primary
+
+    if structured is not None:
+        # v1 标准做法：直接走模型原生 JSON / function-calling 输出，自动校验为 Pydantic 模型
+        llm = llm.with_structured_output(structured)
+
+    return llm
 ```
 
 `.env.example` 关键配置：
 
 ```env
 # ===== LLM =====
-LLM_PROVIDER=openai          # openai | deepseek | qwen
+LLM_PROVIDER=openai          # openai | deepseek | qwen | anthropic
 LLM_MODEL=gpt-4o
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=             # 可选，走代理时填
 LLM_FALLBACK_PROVIDER=deepseek
+LLM_FALLBACK_MODEL=deepseek-chat
 DEEPSEEK_API_KEY=
 LLM_TEMPERATURE=0.4
 LLM_TIMEOUT_SECONDS=60
@@ -186,7 +249,33 @@ USE_MOCK_TOOLS=true          # 初期 true，上线时 false
 ```
 
 **触发 fallback 的条件**：HTTP 429 / 5xx / 超时 / `RateLimitError` / `APIConnectionError`。
-fallback 触发时记录 `llm_fallback_total{from,to,reason}` 指标。
+fallback 触发由 `with_fallbacks` 在 Runnable 层透明完成，并通过 LangSmith trace 自动记录；同时上报 `llm_fallback_total{from,to,reason}` 指标。
+
+### 3.4 横切关注点：v1 Middleware 机制
+
+LangChain 1.0 引入的 **Middleware** 用于把过去散落在节点里的横切逻辑收拢到统一的钩子里：
+`before_model` / `after_model` / `wrap_model_call` / `before_tool` / `after_tool` / `wrap_tool_call`。
+
+本项目主图是定制 `StateGraph`，**不直接挂 middleware**；但以下两个场景使用 middleware：
+
+| 场景 | 中间件 | 挂载位置 |
+|------|--------|----------|
+| `freeform` refine 子 Agent（见 §4.4） | 自带 `summarization_middleware`（防止上下文超限）+ `pii_middleware`（脱敏） | `create_agent(..., middleware=[...])` |
+| Plan 阶段昂贵节点（`plan_itinerary` / `review_plan`） | 自定义 `LLMCostGuardMiddleware`（成本上报、token 超阈值熔断） | 在 `build_llm()` 返回的 Runnable 外再包一层 |
+| 人审/审批通道（运营回退） | `human_in_the_loop_middleware`（v1 内置） | 仅 staging 灰度环境启用 |
+
+```python
+# app/agent/middleware.py
+from langchain.agents.middleware import (
+    summarization_middleware,
+    human_in_the_loop_middleware,
+)
+
+REFINE_AGENT_MIDDLEWARE = [
+    summarization_middleware(max_tokens=8000),       # 上下文超长时自动总结
+    # human_in_the_loop_middleware(...),             # 仅在需要人审的工具上启用
+]
+```
 
 ---
 
@@ -197,6 +286,59 @@ fallback 触发时记录 `llm_fallback_total{from,to,reason}` 指标。
 - **`refine_graph`** — 多轮调整：基于已存在的 State，按用户指令做最小化重算
 
 两张图共享同一个 `TripState` 和同一份 Checkpointer (Redis)，通过 `conversation_name`（即 `thread_id`）关联。
+
+### 4.0 Runtime Context（LangGraph v1 新特性）
+
+LangGraph 1.0 引入 **`context_schema`** 用作类型化的运行时依赖注入，**替代过去把 LLM 客户端、工具盒塞进 `config.configurable` 的反模式**：
+
+- 持久化、需要 checkpoint 的字段 → 放 `TripState`
+- 单次运行的依赖（LLM 实例、工具盒、用户身份、trace 关联 id）→ 放 `TripContext`，**不会被持久化**
+
+```python
+# app/agent/context.py
+from dataclasses import dataclass
+from langchain_core.runnables import Runnable
+from app.tools.factory import ToolBox        # build_tools() 一次性构造好的工具集合
+
+
+@dataclass
+class TripContext:
+    """LangGraph v1 context_schema：单次运行的依赖注入容器。"""
+    trip_id: str
+    version: int
+    llm: Runnable                      # 由 build_llm() 构造
+    tools: ToolBox                     # weather / flight / hotel / poi / route / currency
+    user_id: str | None = None
+    correlation_id: str | None = None
+```
+
+节点签名统一改为 `(state, runtime)`，通过 `runtime.context.xxx` 读取依赖：
+
+```python
+from langgraph.runtime import Runtime
+from app.agent.context import TripContext
+
+async def fetch_weather(state: TripState, runtime: Runtime[TripContext]) -> dict:
+    weather_tool = runtime.context.tools.weather
+    weather = await weather_tool.ainvoke({
+        "city": state["destination"],
+        "date_range": state["date_range"],
+    })
+    return {"weather": weather}
+```
+
+调用入口（Worker / FastAPI handler）：
+
+```python
+context = TripContext(trip_id=trip_id, version=1, llm=build_llm(), tools=build_tools())
+config = {"configurable": {"thread_id": conversation_name}}
+
+result = await plan_graph.ainvoke(
+    initial_state,
+    config=config,
+    context=context,           # ← v1: 用 context= 传入 typed runtime context
+)
+```
 
 ### 4.1 状态定义 (`TripState`)
 
@@ -248,6 +390,9 @@ class TripState(TypedDict, total=False):
 ```
 
 ### 4.2 Plan 图节点列表
+
+> **节点签名（v1）**：`async def node(state: TripState, runtime: Runtime[TripContext]) -> dict`。
+> 节点只返回**状态增量 dict**，由 LangGraph 按 reducer 合并；运行时依赖（`llm` / `tools` / `trip_id` 等）从 `runtime.context` 读取。
 
 | 节点 | 职责 | 调用 LLM | 失败策略 |
 |------|------|---------|---------|
@@ -391,6 +536,32 @@ class RefineIntent(BaseModel):
 - Refine 失败不污染当前已发布版本（事务化：临时 state 提交成功后再切换 current 指针）
 - LLM 解析 RefineIntent 失败时回退为 `freeform`，并把原始指令注入 plan prompt
 
+#### 4.4.6 `freeform` 通道：基于 `langchain.agents.create_agent` 的子 Agent
+
+`freeform` 类型的 refine 指令（"想加点儿小众美食"、"避开人多的地方"…）很难穷举映射，因此走一个**带工具的 ReAct 子 Agent**，让模型自己决定要不要调 `POITool` / `RouteTool` 重新检索：
+
+```python
+# app/agent/subagents/freeform_refine.py
+from langchain.agents import create_agent             # v1 标准入口（不再用 create_react_agent）
+from app.agent.middleware import REFINE_AGENT_MIDDLEWARE
+from app.core.llm import build_llm
+from app.tools.factory import build_poi_tool, build_route_tool
+
+def build_freeform_refine_agent():
+    return create_agent(
+        model=build_llm(),                            # 或字符串 "openai:gpt-4o"
+        tools=[build_poi_tool(), build_route_tool()],
+        system_prompt=FREEFORM_REFINE_SYSTEM_PROMPT,
+        middleware=REFINE_AGENT_MIDDLEWARE,           # summarization + (可选) HITL
+        # response_format=FreeformRefineOutput,       # 直接返回结构化结果给主图
+    )
+```
+
+> v1 关键点：
+> - **必须用 `langchain.agents.create_agent`**；`langgraph.prebuilt.create_react_agent` 已在 v1 标记 deprecated
+> - `AgentState` / `AgentStateWithStructuredResponse` 也已迁移到 `langchain.agents` 命名空间
+> - 子 Agent 输出会作为一个普通 dict patch 合并到主图的 `TripState`，不破坏现有 reducer
+
 ### 4.5 Reducer / 合并策略
 
 并行节点写入不同字段，互不冲突；以下字段使用 reducer：
@@ -407,10 +578,13 @@ dirty_nodes:   Annotated[set[str], lambda a, b: a | b]
 
 ### 5.1 通用 Tool 接口（含 Mock/Real 切换）
 
-每个外部能力封装为 `BaseTravelTool`，**Provider Adapter 层**根据 `USE_MOCK_TOOLS` 选择 Mock 或 Real 实现，对图层完全透明。
+每个外部能力封装为继承 `BaseTool`（LangChain 1.0 仍然推荐这种类形式做有状态工具，简单工具用 `@tool` 装饰器即可）。**Provider Adapter 层**根据 `USE_MOCK_TOOLS` 选择 Mock 或 Real 实现，对图层完全透明。
 
 ```python
 # app/tools/base.py
+from langchain_core.tools import BaseTool             # v1 路径，langchain-core 1.0
+from pydantic import BaseModel
+
 class BaseTravelTool(BaseTool):
     cache_ttl: int = 1800
     provider: BaseProvider           # MockProvider | RealProvider
@@ -430,6 +604,27 @@ class BaseTravelTool(BaseTool):
             raise
 
 # app/tools/factory.py
+from dataclasses import dataclass
+
+@dataclass
+class ToolBox:
+    weather: BaseTravelTool
+    flight:  BaseTravelTool
+    hotel:   BaseTravelTool
+    poi:     BaseTravelTool
+    route:   BaseTravelTool
+    currency: BaseTravelTool
+
+def build_tools() -> ToolBox:
+    return ToolBox(
+        weather=build_weather_tool(),
+        flight=build_flight_tool(),
+        hotel=build_hotel_tool(),
+        poi=build_poi_tool(),
+        route=build_route_tool(),
+        currency=build_currency_tool(),
+    )
+
 def build_flight_tool() -> FlightTool:
     if settings.USE_MOCK_TOOLS:
         provider = MockFlightProvider()
@@ -437,6 +632,9 @@ def build_flight_tool() -> FlightTool:
         provider = AmadeusProvider(api_key=settings.AMADEUS_KEY, ...)
     return FlightTool(provider=provider)
 ```
+
+> 在 `freeform` refine 子 Agent（§4.4.6）里，这些 Tool 直接以 `tools=[poi_tool, route_tool]` 传给 `create_agent`；
+> 在主 `StateGraph` 节点里，则通过 `runtime.context.tools.<name>` 访问，避免每个节点都自己 `build_xxx_tool()`。
 
 ### 5.2 工具清单
 
@@ -574,6 +772,27 @@ Mock 数据原则：
 ---
 
 ## 6. Prompt 设计
+
+> **v1 实践**：所有需要结构化输出的节点（`parse_intent` / `parse_refine_intent` / `plan_itinerary` / `review_plan`）统一走 `ChatPromptTemplate | llm.with_structured_output(Schema)` 的 LCEL 链，避免 JSON 字符串再解析失败的 retry 风暴。`Schema` 直接复用 `app/models/` 下的 Pydantic v2 模型，与 `TripState` 共用一份定义。
+
+```python
+# app/agent/nodes/parse_intent.py（示意）
+from langchain_core.prompts import ChatPromptTemplate
+from langgraph.runtime import Runtime
+from app.agent.context import TripContext
+from app.agent.state import TripState
+from app.models.intent import ParsedIntent              # Pydantic v2 schema
+from app.agent.prompts import PARSE_INTENT_TEMPLATE
+
+_prompt = ChatPromptTemplate.from_template(PARSE_INTENT_TEMPLATE)
+
+async def parse_intent(state: TripState, runtime: Runtime[TripContext]) -> dict:
+    chain = _prompt | runtime.context.llm.with_structured_output(ParsedIntent)
+    intent: ParsedIntent = await chain.ainvoke({
+        "bot_user_input": state.get("bot_user_input", ""),
+    })
+    return {"parsed_intent": intent.model_dump()}
+```
 
 ### 6.1 `parse_intent`（结构化抽取）
 
@@ -714,12 +933,16 @@ TravelPlanningAgent/
 │   ├── core/
 │   │   ├── config.py
 │   │   ├── logging.py
-│   │   ├── llm.py               # LLM Provider 抽象
+│   │   ├── llm.py               # init_chat_model + with_fallbacks + with_structured_output
 │   │   └── locks.py             # 分布式锁（refine 互斥）
 │   ├── agent/
 │   │   ├── state.py
+│   │   ├── context.py           # TripContext（v1 context_schema，运行时 DI）
+│   │   ├── middleware.py        # v1 Middleware：summarization / HITL / 成本守卫
 │   │   ├── plan_graph.py        # build_plan_graph()
 │   │   ├── refine_graph.py      # build_refine_graph()
+│   │   ├── subagents/
+│   │   │   └── freeform_refine.py   # langchain.agents.create_agent 子 Agent
 │   │   ├── nodes/
 │   │   │   ├── validate.py
 │   │   │   ├── parse_intent.py
@@ -741,7 +964,7 @@ TravelPlanningAgent/
 │   │   │   ├── parse_refine_intent.j2
 │   │   │   ├── plan_itinerary.j2
 │   │   │   └── review_plan.j2
-│   │   └── checkpointer.py      # RedisSaver 工厂
+│   │   └── checkpointer.py      # AsyncRedisSaver 工厂（langgraph-checkpoint-redis）
 │   ├── tools/
 │   │   ├── base.py
 │   │   ├── factory.py           # build_xxx_tool() + provider 路由
@@ -951,7 +1174,7 @@ POST /api/v1/debug/trips:plan-sync   # 同步执行整个 graph，便于本地�
 
 | 阶段 | 交付物 | 估时 |
 |------|--------|------|
-| M1 — 骨架 | FastAPI + LangGraph plan 图 + State + Mock Tool 跑通 + 异步任务框架 | 1d |
+| M1 — 骨架 | FastAPI + LangGraph plan 图 + State + Mock Tool 跑通 + 异步任务框架；**锁定 langchain>=1.0 / langgraph>=1.0 / langchain-core>=1.0 版本基线** | 1d |
 | M2 — Mock 工具 | 4 个 Mock Provider + 字段 schema 与真实 API 对齐 | 1.5d |
 | M3 — 编排 | parse_intent / cluster_pois / plan_itinerary / review_plan | 2d |
 | M4 — PDF | Jinja 模板 + WeasyPrint + 中文字体 + 水印 | 1d |
@@ -973,6 +1196,7 @@ POST /api/v1/debug/trips:plan-sync   # 同步执行整个 graph，便于本地�
 2. ✅ **机票 / 酒店初期 Mock，真实 API 方案见 §5.3**
 3. ✅ **支持多轮调整**（refine 子图）
 4. ✅ **主架构异步**（Celery + SSE）
+5. ✅ **使用 LangChain 1.0 + LangGraph 1.0 新版 API**（`init_chat_model` / `context_schema` / `langchain.agents.create_agent` / Middleware / `AsyncRedisSaver`）
 
 ### 14.2 剩余风险与待跟踪
 
@@ -981,16 +1205,19 @@ POST /api/v1/debug/trips:plan-sync   # 同步执行整个 graph，便于本地�
 - **PDF 国际化字体**：日韩 / 阿拉伯等目标地名需要对应字体集
 - **多轮调整的边界**：当 refine 跨度过大（如 5→10 天），可能比直接重做更慢；阈值化处理：超过一定 dirty 比例直接走 plan_graph
 - **成本监控**：GPT-4o 单次完整规划 ≈ 30K~50K tokens，需要预算告警
+- **v1 生态依赖追齐**：`langchain-deepseek` / `langchain-qwen` 等社区 provider 需确认已发布兼容 `langchain-core>=1.0` 的版本；如尚未发布，则临时通过 `init_chat_model("openai:...", base_url=...)` 兼容 OpenAI 协议绕过
 
 ---
 
-## 15. 附：最小可运行示例（伪代码）
+## 15. 附：最小可运行示例（v1 API）
 
 ```python
 # app/agent/plan_graph.py
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.redis import RedisSaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver   # v1 异步 checkpointer
+
 from app.agent.state import TripState
+from app.agent.context import TripContext                     # v1 context_schema
 from app.agent.nodes import (
     validate_input, parse_intent,
     fetch_weather, fetch_flights, fetch_hotels, fetch_pois,
@@ -998,8 +1225,11 @@ from app.agent.nodes import (
     review_plan, render_pdf, finalize,
 )
 
-def build_plan_graph(checkpointer: RedisSaver):
-    g = StateGraph(TripState)
+
+def build_plan_graph(checkpointer: AsyncRedisSaver):
+    # v1: 通过 context_schema 注入运行时依赖（LLM / Tools / 用户身份）
+    g = StateGraph(TripState, context_schema=TripContext)
+
     for n in [validate_input, parse_intent, fetch_weather, fetch_flights,
               fetch_hotels, fetch_pois, cluster_pois, plan_itinerary,
               estimate_budget, review_plan, render_pdf, finalize]:
@@ -1028,8 +1258,13 @@ def build_plan_graph(checkpointer: RedisSaver):
 
 
 # app/agent/refine_graph.py
-def build_refine_graph(checkpointer: RedisSaver):
-    g = StateGraph(TripState)
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+from app.agent.context import TripContext
+
+
+def build_refine_graph(checkpointer: AsyncRedisSaver):
+    g = StateGraph(TripState, context_schema=TripContext)     # v1
     g.add_node("load_previous_state", load_previous_state)
     g.add_node("parse_refine_intent", parse_refine_intent)
     g.add_node("route_refine_dispatcher", route_refine_dispatcher)
@@ -1074,18 +1309,78 @@ def build_refine_graph(checkpointer: RedisSaver):
 ```
 
 ```python
-# 调用方式（异步任务里）
-config = {"configurable": {"thread_id": conversation_name}}
-result = await plan_graph.ainvoke(initial_state, config=config)
+# app/agent/checkpointer.py
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+from app.core.config import settings
 
-# 多轮调整时，同一个 thread_id 即可加载历史 state
-result_v2 = await refine_graph.ainvoke(
-    {"refine_request": "把第3天改成室内活动"},
-    config=config,
+async def build_checkpointer() -> AsyncRedisSaver:
+    saver = AsyncRedisSaver.from_conn_string(settings.REDIS_URL)
+    await saver.asetup()                       # v1 推荐显式初始化索引
+    return saver
+```
+
+```python
+# app/workers/tasks_plan.py（异步调用入口）
+from app.agent.plan_graph import build_plan_graph
+from app.agent.checkpointer import build_checkpointer
+from app.agent.context import TripContext
+from app.core.llm import build_llm
+from app.tools.factory import build_tools
+
+
+async def plan_trip(initial_state: dict, conversation_name: str, trip_id: str):
+    checkpointer = await build_checkpointer()
+    graph = build_plan_graph(checkpointer)
+
+    config = {"configurable": {"thread_id": conversation_name}}
+    context = TripContext(
+        trip_id=trip_id,
+        version=1,
+        llm=build_llm(),
+        tools=build_tools(),
+    )
+
+    # v1: state 只承载业务数据；运行时依赖通过 context= 传入
+    return await graph.ainvoke(initial_state, config=config, context=context)
+
+
+# 多轮调整：同一个 thread_id 即可加载历史 state
+async def refine_trip(refine_request: str, conversation_name: str, trip_id: str, version: int):
+    checkpointer = await build_checkpointer()
+    graph = build_refine_graph(checkpointer)
+
+    config = {"configurable": {"thread_id": conversation_name}}
+    context = TripContext(
+        trip_id=trip_id,
+        version=version,
+        llm=build_llm(),
+        tools=build_tools(),
+    )
+    return await graph.ainvoke(
+        {"refine_request": refine_request},
+        config=config,
+        context=context,
+    )
+```
+
+```python
+# app/agent/subagents/freeform_refine.py（按需启用的 v1 子 Agent）
+from langchain.agents import create_agent
+from app.agent.middleware import REFINE_AGENT_MIDDLEWARE
+
+freeform_agent = create_agent(
+    model="openai:gpt-4o",                                    # 或 build_llm()
+    tools=[poi_tool, route_tool],
+    system_prompt=FREEFORM_REFINE_SYSTEM_PROMPT,
+    middleware=REFINE_AGENT_MIDDLEWARE,
 )
+# 在主图节点里调用：
+# response = await freeform_agent.ainvoke({"messages": [...]})
 ```
 
 ---
 
-> 本方案 v0.2 已确认 4 项关键决策（见 §0 决策日志）。
+> 本方案 v0.3 已确认 5 项关键决策（见 §0 决策日志），核心增量：
+> - **D-05**：全面切换到 LangChain 1.0 + LangGraph 1.0 新版 API（`init_chat_model` / `context_schema` + `Runtime[Ctx]` / `langchain.agents.create_agent` / Middleware / `AsyncRedisSaver`）
+>
 > 评审通过后，按里程碑 M1 → M9 推进。M1~M8 ≈ 10 人日，可基于 Mock 完整跑通；真实 API 接入按平台审核进度独立排期。
