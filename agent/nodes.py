@@ -443,7 +443,11 @@ async def render_pdf(state: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    summary = "PDF + Markdown 已生成" if paths.get("pdf_path") else "Markdown 已生成（PDF 跳过：未安装 WeasyPrint）"
+    summary = (
+        "PDF + Markdown 已生成"
+        if paths.get("pdf_path")
+        else "Markdown 已生成（PDF 跳过：未检测到可用的 PDF 转换引擎，详见日志）"
+    )
     return {
         "pdf_path": paths.get("pdf_path") or "",
         "md_path": paths.get("md_path") or "",
