@@ -2,6 +2,9 @@
 
 **English** | [简体中文](./README.md)
 
+<img width="3492" height="2002" alt="2c6132c78bb436d6ed0d013dea0c8bae" src="https://github.com/user-attachments/assets/54f1f38e-d5a9-4abb-8f01-be1c8085ff07" />
+<img width="3490" height="2008" alt="359a38a2b9cdd831970f59a341f52339" src="https://github.com/user-attachments/assets/7f6b3418-4a21-4ae4-8001-67f7d28c6ff5" />
+
 > An end-to-end runnable **AI Agent demo**: FastAPI + LangGraph 1.0 backend, Vue 3 frontend.
 > Submit a travel request via natural language or a form; the agent runs **weather / flights / hotels / POI / itinerary planning / budget / self-review / PDF export**,
 > streaming **graph nodes / tool calls / chain-of-thought** to the UI in real time over WebSocket, with full **multi-turn refinement** support.
