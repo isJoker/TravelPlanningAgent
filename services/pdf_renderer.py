@@ -1,22 +1,24 @@
-"""Render the trip report as Markdown (always) and PDF (best-effort, multi-engine).
+"""Render the trip report as Markdown (always) and PDF (best-effort).
 
-Strategy (inspired by ``isJoker/DeepSearchResearcher`` ``convert_md_to_pdf_real``):
-the previous implementation only tried WeasyPrint, which is unreliable on macOS
-because the native deps (cairo / pango / gdk-pixbuf) are not installed by default.
-This refactor auto-selects the best available engine for the current platform:
+Multi-engine cross-platform Markdown -> PDF, ported from
+``isJoker/DeepSearchResearcher`` (`utils/word_converter.py`'s
+``convert_md_to_pdf_real``):
 
-  - Windows:        word_com  -> pandoc(+xelatex)  -> weasyprint
-  - macOS / Linux:  pandoc(+xelatex)               -> weasyprint
+  - Windows:        word_com -> pandoc(+xelatex) -> weasyprint
+  - macOS / Linux:  pandoc(+xelatex)             -> weasyprint
 
-Each engine is gracefully skipped when its dependencies are missing, with a
-clear log message; the function always returns a Markdown file and only a PDF
-when at least one engine succeeded.
+In addition to the reference behavior, this module also augments the
+subprocess ``PATH`` on macOS so that a ``pandoc`` invocation can locate
+xelatex installed by the official mactex/basictex packages
+(``/Library/TeX/texbin``). On many macOS setups the GUI installer adds
+that directory to login-shell init only, so a Python process launched
+from an IDE / uvicorn / launchd never sees it - which is the most common
+reason why "I installed pandoc but PDF still doesn't generate" on Mac.
 
-The public entry point ``render_report(ctx, output_dir, version)`` and its
-return shape ``{"md_path": str, "pdf_path": str | None}`` are unchanged so
-existing callers in ``agent/nodes.py`` are not affected.
-
-Engine selection can be forced via the ``PDF_ENGINE`` env var
+The public entry ``render_report(ctx, output_dir, version)`` and its
+return shape ``{"md_path": str, "pdf_path": str | None}`` are unchanged
+so existing callers in ``agent/nodes.py`` are not affected. Engine
+selection can also be forced via the ``PDF_ENGINE`` env var
 (``word`` | ``pandoc`` | ``weasyprint``).
 """
 from __future__ import annotations
@@ -27,7 +29,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -52,7 +54,7 @@ def render_markdown(ctx: Dict[str, Any]) -> str:
 
 
 # ============================================================
-#  Platform & dependency detection
+#  Platform detection
 # ============================================================
 
 def _is_windows() -> bool:
@@ -67,20 +69,65 @@ def _is_linux() -> bool:
     return sys.platform.startswith("linux")
 
 
+# ============================================================
+#  PATH augmentation: find LaTeX/pandoc that GUI-launched processes miss
+# ============================================================
+
+def _extra_tool_paths() -> List[str]:
+    """Common install locations of pandoc / xelatex that aren't always on PATH."""
+    candidates: List[str] = []
+    if _is_macos():
+        candidates += [
+            "/Library/TeX/texbin",                              # mactex / basictex
+            "/usr/local/texlive/2025/bin/universal-darwin",
+            "/usr/local/texlive/2024/bin/universal-darwin",
+            "/usr/local/texlive/2023/bin/universal-darwin",
+            "/opt/homebrew/bin",                                # apple silicon brew
+            "/usr/local/bin",                                   # intel brew
+        ]
+    elif _is_linux():
+        candidates += [
+            "/usr/local/texlive/2025/bin/x86_64-linux",
+            "/usr/local/texlive/2024/bin/x86_64-linux",
+            "/usr/local/texlive/2023/bin/x86_64-linux",
+            "/usr/local/bin",
+        ]
+    elif _is_windows():
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidates += [
+            rf"{program_files}\MiKTeX\miktex\bin\x64",
+            rf"{program_files}\Pandoc",
+        ]
+    return [p for p in candidates if Path(p).is_dir()]
+
+
+def _augmented_env() -> Dict[str, str]:
+    """Return os.environ extended with our extra tool paths prepended to PATH."""
+    env = os.environ.copy()
+    extras = _extra_tool_paths()
+    if not extras:
+        return env
+    sep = ";" if _is_windows() else ":"
+    env["PATH"] = sep.join([*extras, env.get("PATH", "")])
+    return env
+
+
+def _which(cmd: str) -> Optional[str]:
+    """shutil.which but searches our augmented PATH so we can find tools
+    installed in well-known locations that GUI processes often miss."""
+    return shutil.which(cmd, path=_augmented_env().get("PATH"))
+
+
+# ============================================================
+#  Dependency probes
+# ============================================================
+
 def _check_pandoc_available() -> bool:
-    return shutil.which("pandoc") is not None
+    return _which("pandoc") is not None
 
 
 def _check_xelatex_available() -> bool:
-    return shutil.which("xelatex") is not None
-
-
-def _check_markdown_available() -> bool:
-    try:
-        import markdown  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    return _which("xelatex") is not None
 
 
 def _check_weasyprint_available() -> bool:
@@ -90,6 +137,14 @@ def _check_weasyprint_available() -> bool:
     except Exception:
         # WeasyPrint can fail at import time on macOS when its native deps
         # (cairo / pango / gdk-pixbuf) are missing - treat as unavailable.
+        return False
+
+
+def _check_markdown_available() -> bool:
+    try:
+        import markdown  # noqa: F401
+        return True
+    except ImportError:
         return False
 
 
@@ -147,7 +202,7 @@ def _convert_with_word_com(md_path: Path, pdf_path: Path) -> Tuple[bool, str]:
         word_app.Visible = False
         word_app.DisplayAlerts = False
         doc = word_app.Documents.Open(str(temp_html_path.resolve()))
-        # FileFormat=17 is wdFormatPDF
+        # FileFormat=17 == wdFormatPDF
         doc.SaveAs(str(pdf_path.resolve()), FileFormat=17)
         doc.Close(SaveChanges=0)
 
@@ -175,19 +230,18 @@ def _convert_with_word_com(md_path: Path, pdf_path: Path) -> Tuple[bool, str]:
 
 
 # ============================================================
-#  Engine 2: pandoc + xelatex (macOS / Linux / Windows, recommended)
+#  Engine 2: pandoc + xelatex (cross-platform, recommended)
 # ============================================================
 
 def _convert_with_pandoc(md_path: Path, pdf_path: Path) -> Tuple[bool, str]:
     if not _check_pandoc_available():
-        return False, (
-            "未检测到 pandoc。安装方式：macOS: `brew install pandoc`; "
-            "Linux: `apt install pandoc`; Windows: 安装 pandoc 官方包。"
-        )
+        return False, "未检测到 pandoc，请先安装: https://pandoc.org/installing.html"
     if not _check_xelatex_available():
         return False, (
-            "未检测到 xelatex。安装方式：macOS: `brew install --cask mactex`; "
-            "Linux: `sudo apt install texlive-xetex`; Windows: 安装 MiKTeX 或 TeX Live。"
+            "未检测到 xelatex。请安装 LaTeX 引擎："
+            "macOS: `brew install --cask mactex`（或更轻量 `brew install --cask basictex`）；"
+            "Linux: `sudo apt install texlive-xetex`；"
+            "Windows: 安装 MiKTeX 或 TeX Live。"
         )
 
     cmd = [
@@ -196,26 +250,32 @@ def _convert_with_pandoc(md_path: Path, pdf_path: Path) -> Tuple[bool, str]:
         "-o", str(pdf_path),
         "--pdf-engine=xelatex",
         "-V", "geometry:margin=1in",
-        "-V", "mainfont=Helvetica",
-        "-V", "CJKmainfont=PingFang SC",
+        "-V", "mainfont=Helvetica",      # macOS default; LaTeX falls back if missing
+        "-V", "CJKmainfont=PingFang SC", # CJK font for macOS
         "-V", "fontsize=12pt",
         "--highlight-style=tango",
     ]
+    # Linux: append a second -V so pandoc uses the Linux-available CJK font.
+    # (pandoc uses the LAST -V for a given key; this matches the reference
+    # implementation, replacing my earlier buggy `cmd[-3] = ...`.)
     if _is_linux():
-        # Override CJK font for Linux where PingFang SC is not present.
-        cmd[-3] = "CJKmainfont=Noto Sans CJK SC"
+        cmd.extend(["-V", "CJKmainfont=Noto Sans CJK SC"])
 
+    env = _augmented_env()
     try:
         logger.info(f"[pandoc] {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120, env=env
+        )
         if result.returncode != 0:
-            err = result.stderr.strip() or "未知错误"
-            return False, f"pandoc 转换失败: {err}"
+            err = (result.stderr or result.stdout or "未知错误").strip()
+            logger.error(f"[pandoc] 转换失败: {err[:600]}")
+            return False, f"pandoc 转换失败: {err[:600]}"
         if pdf_path.exists() and pdf_path.stat().st_size > 0:
             return True, f"成功转换 (pandoc + xelatex): {pdf_path}"
         return False, "转换完成但未生成有效 PDF 文件"
     except subprocess.TimeoutExpired:
-        return False, "pandoc 转换超时（>60s）"
+        return False, "pandoc 转换超时（>120s）"
     except FileNotFoundError:
         return False, "未找到 pandoc 可执行文件"
     except Exception as e:
@@ -232,7 +292,7 @@ def _convert_with_weasyprint(md_path: Path, pdf_path: Path) -> Tuple[bool, str]:
         return False, "缺少 markdown 依赖，请执行: pip install markdown"
     if not _check_weasyprint_available():
         return False, (
-            "缺少 weasyprint 依赖或其原生库。安装方式：pip install weasyprint，"
+            "缺少 weasyprint 依赖或其原生库。`pip install weasyprint` 后，"
             "macOS 还需 `brew install pango cairo gdk-pixbuf libffi`。"
         )
 
@@ -291,7 +351,7 @@ def _convert_with_weasyprint(md_path: Path, pdf_path: Path) -> Tuple[bool, str]:
 
 
 # ============================================================
-#  Orchestrator: auto-select best engine for the platform
+#  Orchestrator (mirrors reference's `convert_md_to_pdf_real`)
 # ============================================================
 
 _ENGINES = {
@@ -301,21 +361,25 @@ _ENGINES = {
 }
 
 
-def convert_md_to_pdf(
+def convert_md_to_pdf_real(
     md_path: Path,
     pdf_path: Optional[Path] = None,
     engine: Optional[str] = None,
-) -> Tuple[bool, str]:
-    """Cross-platform Markdown → PDF with automatic engine fallback.
+) -> str:
+    """Cross-platform Markdown -> PDF with automatic engine fallback.
 
-    ``engine`` may be forced via argument or the ``PDF_ENGINE`` env var; when
-    omitted, engines are tried in platform-appropriate priority order.
+    Mirrors the reference implementation in DeepSearchResearcher. ``engine``
+    may be forced via argument or the ``PDF_ENGINE`` env var; when omitted,
+    engines are tried in platform-appropriate priority order.
+
+    Returns a human-readable message string. Success is signalled by the
+    substring ``"成功"`` (matching the reference's calling convention).
     """
     md_path = Path(md_path)
     if not md_path.exists():
-        return False, f"错误: 文件不存在 - {md_path}"
+        return f"错误: 文件不存在 - {md_path}"
     if md_path.suffix.lower() not in (".md", ".markdown"):
-        logger.warning(f"[pdf] {md_path} 后缀不是 .md/.markdown，仍将尝试转换")
+        logger.warning(f"[pdf] 文件后缀非 .md/.markdown，仍尝试转换: {md_path}")
 
     if pdf_path is None:
         pdf_path = md_path.with_suffix(".pdf")
@@ -323,43 +387,53 @@ def convert_md_to_pdf(
         pdf_path = Path(pdf_path)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
+    logger.info(f"开始转换: {md_path} -> {pdf_path}")
+
     forced = (engine or os.getenv("PDF_ENGINE") or "").strip().lower()
     if forced:
         if forced not in _ENGINES:
-            return False, f"未知的引擎名称 '{forced}'，可选: word, pandoc, weasyprint"
-        order = [(forced, _ENGINES[forced])]
+            return f"错误: 未知的引擎名称 '{forced}'，可选: 'word', 'pandoc', 'weasyprint'"
+        engines_to_try = [(forced, _ENGINES[forced])]
     elif _is_windows() and _check_win32com_available():
-        order = [
+        engines_to_try = [
             ("word", _convert_with_word_com),
             ("pandoc", _convert_with_pandoc),
             ("weasyprint", _convert_with_weasyprint),
         ]
     else:
-        # macOS / Linux: pandoc is the most reliable; weasyprint is the fallback.
-        order = [
+        engines_to_try = [
             ("pandoc", _convert_with_pandoc),
             ("weasyprint", _convert_with_weasyprint),
         ]
 
-    logger.info(f"[pdf] {md_path} -> {pdf_path}")
-    last_msg = ""
-    for name, fn in order:
-        logger.info(f"[pdf] 尝试引擎: {name}")
-        ok, msg = fn(md_path, pdf_path)
-        if ok:
-            logger.info(f"[pdf] {msg}")
-            return True, msg
-        logger.warning(f"[pdf] 引擎 {name} 失败: {msg}")
-        last_msg = msg
+    for name, fn in engines_to_try:
+        logger.info(f"尝试引擎: {name}")
+        success, msg = fn(md_path, pdf_path)
+        if success:
+            logger.info(msg)
+            return msg
+        logger.warning(f"引擎 {name} 失败: {msg}")
 
-    return False, (
-        "PDF 转换失败：所有可用引擎均未成功。" + (f" 最后一次错误：{last_msg}" if last_msg else "") +
-        "\n建议安装其中一种依赖：\n"
+    return (
+        "转换失败: 所有可用引擎均无法转换。\n"
+        "建议安装其中一种依赖：\n"
         "  - macOS: `brew install pandoc && brew install --cask mactex`\n"
         "  - Linux: `sudo apt install pandoc texlive-xetex`\n"
         "  - Windows: `pip install pywin32 markdown`\n"
         "  - 跨平台后备: `pip install weasyprint markdown`"
     )
+
+
+def convert_md_to_pdf(
+    md_path: Path,
+    pdf_path: Optional[Path] = None,
+    engine: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Tuple-returning wrapper around :func:`convert_md_to_pdf_real` for
+    callers that want an explicit success bool."""
+    msg = convert_md_to_pdf_real(md_path, pdf_path, engine=engine)
+    success = "成功" in msg
+    return success, msg
 
 
 # ============================================================
@@ -383,9 +457,37 @@ def render_report(
     md_path.write_text(md_text, encoding="utf-8")
 
     pdf_path = output_dir / f"trip_v{version}.pdf"
-    pdf_ok, _msg = convert_md_to_pdf(md_path, pdf_path)
+    msg = convert_md_to_pdf_real(md_path, pdf_path)
+    pdf_ok = "成功" in msg
 
     return {
         "md_path": str(md_path),
         "pdf_path": str(pdf_path) if pdf_ok else None,
     }
+
+
+# ============================================================
+#  CLI test mode: `python -m services.pdf_renderer path/to/file.md`
+# ============================================================
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Markdown -> PDF (multi-engine).")
+    parser.add_argument("md", type=Path, help="Path to source .md file")
+    parser.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="Output PDF path (default: same dir, .pdf extension)",
+    )
+    parser.add_argument(
+        "-e", "--engine", choices=("word", "pandoc", "weasyprint"), default=None,
+        help="Force a specific engine (default: auto-select for platform)",
+    )
+    args = parser.parse_args()
+
+    print(f"platform = {sys.platform}")
+    print(f"pandoc   = {_which('pandoc')}")
+    print(f"xelatex  = {_which('xelatex')}")
+    print(f"extra PATH dirs: {_extra_tool_paths()}")
+    print("---")
+    print(convert_md_to_pdf_real(args.md, args.output, engine=args.engine))
