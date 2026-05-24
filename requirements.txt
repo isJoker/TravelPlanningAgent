@@ -1,0 +1,27 @@
+# ===== Core =====
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+loguru==0.7.2
+
+# ===== LangGraph / LangChain =====
+langgraph==0.2.34
+langchain==0.3.3
+langchain-core==0.3.10
+langchain-openai==0.2.2
+
+# ===== Templates / Rendering =====
+jinja2==3.1.4
+markdown==3.7
+pyyaml==6.0.2
+
+# ===== Utilities =====
+faker==30.0.0
+cachetools==5.5.0
+httpx==0.27.2
+
+# ===== Optional: PDF rendering (requires system libs cairo/pango) =====
+# Uncomment to enable PDF output. Demo gracefully falls back to Markdown if missing.
+# weasyprint==62.3

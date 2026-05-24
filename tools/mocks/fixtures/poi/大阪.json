@@ -1,0 +1,18 @@
+[
+  {"name": "大阪城", "type": "景点", "area": "市中心", "lng": 135.5258, "lat": 34.6873, "rating": 4.6, "duration_minutes": 120, "ticket_price": 80, "indoor": false, "suitable_for_kids": true},
+  {"name": "通天阁", "type": "景点", "area": "新世界", "lng": 135.5063, "lat": 34.6526, "rating": 4.3, "duration_minutes": 60, "ticket_price": 60, "indoor": true, "suitable_for_kids": true},
+  {"name": "心斋桥", "type": "购物", "area": "心斋桥", "lng": 135.5012, "lat": 34.6720, "rating": 4.5, "duration_minutes": 150, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "道顿堀", "type": "餐厅", "area": "心斋桥", "lng": 135.5023, "lat": 34.6685, "rating": 4.7, "duration_minutes": 90, "ticket_price": 0, "indoor": false, "suitable_for_kids": true},
+  {"name": "环球影城", "type": "体验", "area": "此花区", "lng": 135.4324, "lat": 34.6654, "rating": 4.8, "duration_minutes": 360, "ticket_price": 600, "indoor": false, "suitable_for_kids": true},
+  {"name": "黑门市场", "type": "餐厅", "area": "千日前", "lng": 135.5060, "lat": 34.6660, "rating": 4.4, "duration_minutes": 90, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "海游馆", "type": "景点", "area": "天保山", "lng": 135.4290, "lat": 34.6543, "rating": 4.6, "duration_minutes": 150, "ticket_price": 180, "indoor": true, "suitable_for_kids": true},
+  {"name": "梅田蓝天大厦", "type": "景点", "area": "梅田", "lng": 135.4904, "lat": 34.7055, "rating": 4.4, "duration_minutes": 90, "ticket_price": 100, "indoor": true, "suitable_for_kids": true},
+  {"name": "天王寺动物园", "type": "景点", "area": "天王寺", "lng": 135.5070, "lat": 34.6510, "rating": 4.2, "duration_minutes": 120, "ticket_price": 30, "indoor": false, "suitable_for_kids": true},
+  {"name": "一兰拉面·道顿堀店", "type": "餐厅", "area": "心斋桥", "lng": 135.5031, "lat": 34.6680, "rating": 4.5, "duration_minutes": 60, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "蟹道乐", "type": "餐厅", "area": "心斋桥", "lng": 135.5015, "lat": 34.6690, "rating": 4.5, "duration_minutes": 90, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "Hep Five 摩天轮", "type": "体验", "area": "梅田", "lng": 135.4982, "lat": 34.7036, "rating": 4.3, "duration_minutes": 60, "ticket_price": 35, "indoor": false, "suitable_for_kids": true},
+  {"name": "EXPOCITY", "type": "购物", "area": "万博", "lng": 135.5340, "lat": 34.8060, "rating": 4.5, "duration_minutes": 180, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "NIFREL 生态馆", "type": "景点", "area": "万博", "lng": 135.5347, "lat": 34.8065, "rating": 4.5, "duration_minutes": 120, "ticket_price": 130, "indoor": true, "suitable_for_kids": true},
+  {"name": "大阪日航酒店附近回转寿司", "type": "餐厅", "area": "心斋桥", "lng": 135.5009, "lat": 34.6723, "rating": 4.3, "duration_minutes": 60, "ticket_price": 0, "indoor": true, "suitable_for_kids": true},
+  {"name": "大阪生活今昔馆", "type": "景点", "area": "天满", "lng": 135.5145, "lat": 34.7060, "rating": 4.4, "duration_minutes": 90, "ticket_price": 60, "indoor": true, "suitable_for_kids": true}
+]

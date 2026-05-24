@@ -1,0 +1,98 @@
+parse_intent:
+  system: |
+    你是旅行偏好抽取器（preference extractor）。从用户输入中抽取结构化字段，缺失字段输出 null。
+  user: |
+    用户输入：
+    {bot_user_input}
+
+    输出 JSON：
+    {
+      "budget_per_person": number | null,
+      "must_visit": [string],
+      "avoid": [string],
+      "pace": "relaxed" | "balanced" | "intense" | null,
+      "with_kids": boolean | null,
+      "with_elder": boolean | null,
+      "diet": [string],
+      "transport_pref": "self_drive" | "public" | "taxi" | null
+    }
+
+plan_itinerary:
+  system: |
+    你是资深旅行规划师（travel planner）。
+  user: |
+    给定以下材料，生成 {days_num} 天行程。
+
+    【目的地】{destination}
+    【人数】{people_num}
+    【主题】{travel_theme}
+    【日期与天气】{weather}
+    【候选 POI（按片区聚类）】{pois_clustered}
+    【约束】{constraints}
+
+    要求：
+    1. 每天划分为 上午 / 中午 / 下午 / 晚上 四个时段。
+    2. 同一天的 POI 应在同一片区，避免长距离折返。
+    3. 雨天优先安排室内 POI。
+    4. 主题为"亲子"时降低强度，单日步行距离 ≤ 5km。
+
+    仅输出 JSON：
+    {
+      "itinerary": [
+        {
+          "day_index": 1,
+          "date": "YYYY-MM-DD",
+          "weather_summary": "string",
+          "area": "string",
+          "slots": [
+            { "slot": "上午", "poi": "string", "type": "景点|餐厅|体验|购物", "note": "string|null" }
+          ]
+        }
+      ],
+      "tips": [string]
+    }
+
+review_plan:
+  system: |
+    你是审稿编辑（review editor），检查旅行行程是否合理。
+  user: |
+    【行程】{itinerary}
+    【天气】{weather}
+    【主题】{travel_theme}
+    【预算】{budget}
+
+    检查：
+    - 同一天 POI 跨片区导致来回奔波
+    - 餐饮与景点冲突 / 营业时间冲突
+    - 天气与活动不匹配（雨天户外）
+    - 主题契合度低
+    - 预算严重超支
+
+    仅输出 JSON：
+    { "passed": bool, "issues": [string], "suggestions": [string] }
+
+parse_refine_intent:
+  system: |
+    你是旅行助手的指令解析器（refine intent parser）。
+  user: |
+    用户已有一份 {days_num} 天行程，希望调整。
+    【当前行程摘要】{itinerary_summary}
+    【用户调整指令】{refine_request}
+
+    判断规则：
+    - 提到具体某天 → rework_day
+    - 提到换酒店/住宿 → change_hotel
+    - 提到航班/机票 → change_flight
+    - 提到节奏/紧/松/累 → change_pace
+    - 仅替换某景点 → swap_poi
+    - 改变主题 → change_theme
+    - 涉及预算 → change_budget
+    - 增加/减少天数 → extend_days
+    - 兜底 → freeform
+
+    仅输出 JSON：
+    {
+      "type": "swap_poi|rework_day|change_hotel|change_flight|change_pace|change_theme|change_budget|extend_days|freeform",
+      "targets": [string],
+      "payload": {}
+    }
