@@ -1,16 +1,26 @@
-# Travel Planning Agent · 智能旅行规划助手
+<div align="center">
 
-[English](./README.en.md) | **简体中文**
+# ✈️ TravelPlanningAgent
 
-<img width="3492" height="2002" alt="2c6132c78bb436d6ed0d013dea0c8bae" src="https://github.com/user-attachments/assets/54f1f38e-d5a9-4abb-8f01-be1c8085ff07" />
-<img width="3490" height="2008" alt="359a38a2b9cdd831970f59a341f52339" src="https://github.com/user-attachments/assets/7f6b3418-4a21-4ae4-8001-67f7d28c6ff5" />
+### 基于 LangGraph 多智能体协作的智能旅行规划助手
 
+一句话或一张表单提交诉求，自动完成 **多源数据聚合 + 行程编排 + 自反思 + Markdown / PDF 报告生成**，<br/>
+全程 WebSocket 实时推送 **节点 / 工具调用 / 思维链**，支持 **多轮调整** 与 **MOCK 零密钥运行**。
 
-> 一个端到端可运行的 **AI Agent Demo**：FastAPI + LangGraph 1.0 后端 + Vue 3 前端，
-> 用自然语言或表单提交诉求，Agent 自动完成 **天气 / 机票 / 酒店 / 景点 / 行程编排 / 预算 / 自反思 / PDF 导出**，
-> 全程 WebSocket 实时推送 **节点 / 工具调用 / 思维链**，支持**多轮调整**。
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.0+-1C3C3C)](https://langchain-ai.github.io/langgraph/)
+[![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](./LICENSE)
 
-✈️ 默认 **MOCK 模式零密钥即可运行**；切换到 GPT-4o + 真实 API 仅需改环境变量。
+[English](./README.en.md) · **简体中文**
+
+</div>
+
+<p align="center">
+  <img width="80%" alt="welcome screen" src="https://github.com/user-attachments/assets/54f1f38e-d5a9-4abb-8f01-be1c8085ff07" />
+  <img width="80%" alt="chat stream with thought process" src="https://github.com/user-attachments/assets/7f6b3418-4a21-4ae4-8001-67f7d28c6ff5" />
+</p>
 
 ---
 
