@@ -10,10 +10,8 @@ from typing import Any, Awaitable, Callable, Dict, List
 
 from api.logger import logger
 from api.monitor import monitor
-from agent import load_prompts
+from agent import agents
 from agent.checkpointer import get_checkpointer
-from agent.llm import build_llm
-from models.refine import DIRTY_MAP
 
 
 def _timed(node_name: str):
@@ -87,39 +85,14 @@ async def load_previous_state(state: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================
 @_timed("parse_refine_intent")
 async def parse_refine_intent(state: Dict[str, Any]) -> Dict[str, Any]:
-    request = state.get("refine_request") or ""
-    summary = _itinerary_summary(state.get("itinerary") or [])
-    llm = build_llm()
-    prompt = load_prompts.render(
-        "parse_refine_intent",
-        days_num=state.get("days_num", 0),
-        itinerary_summary=summary,
-        refine_request=request,
-    )
-    try:
-        intent = await llm.chat_json(prompt)
-        if not isinstance(intent, dict) or not intent.get("type"):
-            intent = {"type": "freeform", "targets": [], "payload": {"free_text": request}}
-    except Exception as e:
-        logger.warning(f"parse_refine_intent LLM failed: {e}; using freeform")
-        intent = {"type": "freeform", "targets": [], "payload": {"free_text": request}}
-
-    dirty = DIRTY_MAP.get(intent["type"], DIRTY_MAP["freeform"])
+    result = await agents.parse_refine_intent(state)
+    intent = result.get("refine_intent", {})
+    dirty = result.get("dirty_nodes", set())
     return {
         "refine_intent": intent,
-        "dirty_nodes": set(dirty),
-        "_summary": f"intent={intent['type']} dirty={sorted(dirty)}",
+        "dirty_nodes": dirty,
+        "_summary": f"intent={intent.get('type', 'freeform')} dirty={sorted(dirty)}",
     }
-
-
-def _itinerary_summary(itinerary: List[Dict[str, Any]]) -> str:
-    if not itinerary:
-        return "(empty)"
-    parts: List[str] = []
-    for d in itinerary[:7]:
-        slots = "、".join(s.get("poi", "") for s in d.get("slots", [])[:4])
-        parts.append(f"D{d.get('day_index')}: {slots}")
-    return " | ".join(parts)
 
 
 # ============================================================

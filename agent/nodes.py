@@ -16,8 +16,7 @@ from urllib.parse import quote
 from api.context import get_session_dir, get_thread_id
 from api.logger import logger
 from api.monitor import monitor
-from agent import load_prompts
-from agent.llm import build_llm
+from agent import agents
 from services.pdf_renderer import render_report
 from tools.base import FlightTool, HotelTool, POITool, WeatherTool
 from tools.factory import (
@@ -93,33 +92,9 @@ async def validate_input(state: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================
 @_timed("parse_intent")
 async def parse_intent(state: Dict[str, Any]) -> Dict[str, Any]:
-    bot_input = state.get("bot_user_input") or ""
-    if not bot_input.strip():
-        return {"parsed_intent": {}, "constraints": {}}
-
-    llm = build_llm()
-    prompt = load_prompts.render("parse_intent", bot_user_input=bot_input)
-    try:
-        intent = await llm.chat_json(prompt)
-    except Exception as e:
-        logger.warning(f"parse_intent LLM failed: {e}")
-        intent = {}
-
-    constraints: Dict[str, Any] = {}
-    if intent.get("budget_per_person"):
-        constraints["budget_per_person"] = intent["budget_per_person"]
-    if intent.get("pace"):
-        constraints["pace"] = intent["pace"]
-    if intent.get("with_kids"):
-        constraints["with_kids"] = True
-    if intent.get("avoid"):
-        constraints["avoid"] = intent["avoid"]
-
-    return {
-        "parsed_intent": intent,
-        "constraints": constraints,
-        "_summary": f"识别 {len(constraints)} 项约束",
-    }
+    result = await agents.parse_intent(state)
+    result["_summary"] = f"识别 {len(result.get('constraints', {}))} 项约束"
+    return result
 
 
 # ============================================================
@@ -241,25 +216,12 @@ async def cluster_pois(state: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================
 @_timed("plan_itinerary")
 async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
-    llm = build_llm()
-    prompt = load_prompts.render(
-        "plan_itinerary",
-        days_num=state["days_num"],
-        destination=state["destination"],
-        people_num=state["people_num"],
-        travel_theme=state.get("travel_theme") or "通用",
-        weather=state.get("weather") or [],
-        pois_clustered=state.get("pois_clustered") or {},
-        constraints=state.get("constraints") or {},
-    )
+    result = await agents.plan_itinerary(state)
+    itinerary = result.get("itinerary") or []
+    tips = result.get("tips") or []
 
-    try:
-        out = await llm.chat_json(prompt)
-        itinerary = out.get("itinerary") or []
-        tips = out.get("tips") or []
-    except Exception as e:
-        logger.warning(f"plan_itinerary LLM failed: {e}")
-        # Fallback: synthesise from pois_clustered.
+    # Fallback: synthesise from pois_clustered if LLM returned empty.
+    if not itinerary:
         itinerary = _fallback_itinerary(state)
         tips = ["保持手机充电", "预留缓冲时间", "贵重物品随身"]
 
@@ -361,28 +323,10 @@ async def estimate_budget(state: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================
 @_timed("review_plan")
 async def review_plan(state: Dict[str, Any]) -> Dict[str, Any]:
-    llm = build_llm()
-    prompt = load_prompts.render(
-        "review_plan",
-        itinerary=state.get("itinerary") or [],
-        weather=state.get("weather") or [],
-        travel_theme=state.get("travel_theme") or "通用",
-        budget=state.get("budget") or {},
-    )
+    result = await agents.review_plan(state)
+    passed = result.get("review_passed", True)
+    feedback = result.get("review_feedback", "")
     iteration = int(state.get("retry_count", 0)) + 1
-    try:
-        out = await llm.chat_json(prompt)
-    except Exception as e:
-        logger.warning(f"review_plan LLM failed: {e}")
-        out = {"passed": True, "issues": [], "suggestions": []}
-
-    passed = bool(out.get("passed", True))
-    feedback_parts = []
-    if out.get("issues"):
-        feedback_parts.append("issues: " + "; ".join(out["issues"]))
-    if out.get("suggestions"):
-        feedback_parts.append("suggestions: " + "; ".join(out["suggestions"]))
-    feedback = " | ".join(feedback_parts)
 
     monitor.report_review(iteration=iteration, passed=passed, feedback=feedback or None)
     return {

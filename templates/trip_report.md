@@ -1,7 +1,6 @@
 # {{ title }}
 
 > 版本 v{{ version }} · 生成时间 {{ generated_at }}
-> {% if mock_mode %}**演示数据 (DEMO) — 请勿用于真实出行**{% endif %}
 
 ---
 
@@ -29,7 +28,7 @@
 {% for day in itinerary %}
 ### Day {{ day.day_index }}{% if day.date %} · {{ day.date }}{% endif %}{% if day.area %} · {{ day.area }}{% endif %}
 
-{% if day.weather_summary %}🌤 **天气**：{{ day.weather_summary }}{% endif %}
+{% if day.weather_summary %} ☀️**天气**：{{ day.weather_summary }}{% endif %}
 
 | 时段 | 安排 | 类型 | 备注 |
 |------|------|------|------|

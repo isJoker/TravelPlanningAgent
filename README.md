@@ -10,7 +10,6 @@ End-to-end demo of the [v0.3 design](./DESIGN.md): **FastAPI + LangGraph + InMem
 
 ```bash
 # 1. Backend
-cp .env.example .env                        # MOCK mode is the default
 pip install -r requirements.txt
 PYTHONPATH=. python -m uvicorn api.server:app --reload --port 8000
 
