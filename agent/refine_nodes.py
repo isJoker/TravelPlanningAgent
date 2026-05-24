@@ -46,20 +46,30 @@ async def load_previous_state(state: Dict[str, Any]) -> Dict[str, Any]:
     we invoke with the same thread_id, but we still need to ensure the
     ``refine_request`` field from the new invocation is merged onto the old
     state. Returning an empty patch is enough — InMemorySaver merges.
+
+    LangGraph 1.0 exposes ``aget_tuple(config) -> CheckpointTuple | None``
+    as the recommended async API for inspecting a saved checkpoint; the
+    ``CheckpointTuple.checkpoint`` field carries the channel values.
     """
     saver = get_checkpointer()
     config = {"configurable": {"thread_id": state.get("conversation_name", "")}}
     try:
-        snap = saver.get(config)
+        snap = await saver.aget_tuple(config)
     except Exception as e:  # pragma: no cover
-        logger.warning(f"load_previous_state: get() failed: {e}")
+        logger.warning(f"load_previous_state: aget_tuple() failed: {e}")
         snap = None
 
     prev_version = 1
     if snap is not None:
-        # snap is a CheckpointTuple-like in newer langgraph or a Checkpoint dict.
+        # CheckpointTuple in LangGraph 1.0: dataclass-like with a .checkpoint
+        # attribute (a Checkpoint TypedDict) that holds channel_values. We
+        # also defensively support the legacy shape where snap itself is the
+        # checkpoint dict.
         try:
-            channel_values = getattr(snap, "channel_values", None) or snap.get("channel_values", {})
+            checkpoint = getattr(snap, "checkpoint", None)
+            if checkpoint is None and isinstance(snap, dict):
+                checkpoint = snap
+            channel_values = (checkpoint or {}).get("channel_values", {}) or {}
         except Exception:
             channel_values = {}
         prev_version = int(channel_values.get("version", 1))

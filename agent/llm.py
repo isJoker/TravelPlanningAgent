@@ -3,8 +3,9 @@
 Two modes:
   - MOCK_LLM=true (default) → MockLLM returns deterministic stub JSON so the
     demo runs end-to-end without any API key.
-  - MOCK_LLM=false → real GPT-4o via langchain_openai. Falls back to the
-    secondary provider on RateLimitError / APIConnectionError if configured.
+  - MOCK_LLM=false → real GPT-4o via LangChain 1.0's unified
+    ``init_chat_model`` factory (the ``openai:`` provider routes to
+    ``langchain-openai``). Falls back to MockLLM on init failure.
 
 The public surface is intentionally small: ``llm.chat_json(prompt) -> dict``
 and ``llm.chat(prompt) -> str``.
@@ -131,15 +132,28 @@ class MockLLM:
         return {"itinerary": plan, "tips": ["随身携带雨具", "保持手机充电", "注意贵重物品"]}
 
 
-# ---------------- Real LLM (GPT-4o via langchain) ----------------
+# ---------------- Real LLM (GPT-4o via langchain 1.0) ----------------
 class RealLLM:
+    """Real chat model wrapper using the LangChain 1.0 ``init_chat_model`` factory.
+
+    LangChain 1.0 introduced a unified provider-prefixed entry point
+    (``init_chat_model("openai:gpt-4o", ...)``) that replaces the
+    provider-specific constructors of 0.x. We still depend on
+    ``langchain-openai`` so the underlying ``ChatOpenAI`` class is available
+    to the factory; we just no longer instantiate it directly.
+
+    Messages are sent as a ``[HumanMessage(...)]`` list (the 1.0 idiom) rather
+    than a bare prompt string.
+    """
+
     name = "openai"
 
     def __init__(self) -> None:
-        from langchain_openai import ChatOpenAI
+        from langchain.chat_models import init_chat_model
 
+        model_name = os.getenv("LLM_MODEL", "gpt-4o")
         kwargs: Dict[str, Any] = {
-            "model": os.getenv("LLM_MODEL", "gpt-4o"),
+            "model_provider": "openai",
             "temperature": float(os.getenv("LLM_TEMPERATURE", "0.4")),
             "timeout": float(os.getenv("LLM_TIMEOUT_SECONDS", "60")),
             "max_retries": int(os.getenv("LLM_MAX_RETRIES", "3")),
@@ -150,11 +164,16 @@ class RealLLM:
         base_url = os.getenv("OPENAI_BASE_URL")
         if base_url:
             kwargs["base_url"] = base_url
-        self._client = ChatOpenAI(**kwargs)
+        # init_chat_model returns a BaseChatModel (here ChatOpenAI under the hood).
+        self._client = init_chat_model(model_name, **kwargs)
 
     async def chat(self, prompt: str, **_: Any) -> str:
-        msg = await self._client.ainvoke(prompt)
-        return msg.content if hasattr(msg, "content") else str(msg)
+        from langchain_core.messages import HumanMessage
+
+        msg = await self._client.ainvoke([HumanMessage(content=prompt)])
+        # In 1.0, AIMessage.content can be either a str or a list of content
+        # blocks. Normalise to plain text.
+        return _content_to_text(getattr(msg, "content", msg))
 
     async def chat_json(self, prompt: str, **kwargs: Any) -> Dict[str, Any]:
         instruction = (
@@ -162,6 +181,25 @@ class RealLLM:
         )
         text = await self.chat(f"{prompt}\n\n{instruction}")
         return _extract_json(text) or {}
+
+
+def _content_to_text(content: Any) -> str:
+    """LangChain 1.0 messages may carry list-of-blocks content; flatten to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                # text block: {"type": "text", "text": "..."}
+                if "text" in block:
+                    parts.append(str(block["text"]))
+                elif "content" in block:
+                    parts.append(str(block["content"]))
+        return "".join(parts)
+    return str(content)
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:

@@ -6,11 +6,12 @@ pydantic-settings==2.5.2
 python-dotenv==1.0.1
 loguru==0.7.2
 
-# ===== LangGraph / LangChain =====
-langgraph==0.2.34
-langchain==0.3.3
-langchain-core==0.3.10
-langchain-openai==0.2.2
+# ===== LangGraph / LangChain (1.0 GA — released Oct 2025) =====
+# Pinned to the 1.x major series; the 0.x APIs are no longer used.
+langgraph>=1.0,<2
+langchain>=1.0,<2
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
 
 # ===== Templates / Rendering =====
 jinja2==3.1.4
