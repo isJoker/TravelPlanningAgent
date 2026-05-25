@@ -74,42 +74,56 @@ streaming **graph nodes / tool calls / chain-of-thought** over WebSocket in real
 
 ## Architecture Overview
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Web Frontend  (Vue 3 + TS + Vite + Pinia)                       │
-│  WelcomeScreen / ChatStream / ThoughtProcess / FilesSidebar      │
-│  └─ stores/chat.ts  ←──────  WebSocket  ──────→ /ws/{thread_id}  │
-└──────────────┬───────────────────────────────────────────────────┘
-               │ HTTP (axios) + WebSocket
-┌──────────────▼───────────────────────────────────────────────────┐
-│  FastAPI service layer (api/server.py)                           │
-│  REST: /api/trip · /api/trip/{tid}/refine · /api/files · ...     │
-│  WS:   /ws/{thread_id} ── ConnectionManager (per-thread)         │
-│  asyncio.create_task ─→ Agent                                    │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│  LangGraph orchestration layer (agent/)                          │
-│   plan_graph  /  refine_graph     —— shared InMemorySaver        │
-│   12 nodes + 4 LLM sub-agents (parse_intent / plan_itinerary /   │
-│                                review_plan / parse_refine)       │
-└──┬─────────┬──────────┬──────────┬──────────────────────────────┘
-   ▼         ▼          ▼          ▼
-┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
-│Weather│ │Flight│ │Hotel │ │ POI  │  ← TravelTool wrapper auto-emits monitor events
-└──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘
-   ▼        ▼        ▼        ▼
-┌──────────────────────────────────┐
-│ Provider adapter (Mock | Real)   │
-└──────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph FE["🖥️ Web Frontend · Vue 3 + TS + Vite + Pinia"]
+        FUI["WelcomeScreen / ChatStream / ThoughtProcess / FilesSidebar"]
+        FStore["stores/chat.ts (Pinia)"]
+        FUI --- FStore
+    end
 
-Cross-cutting concerns:
-  • ContextVar(session_dir, thread_id)         per-coroutine session isolation
-  • Monitor singleton + run_coroutine_threadsafe   reverse push to WS from any depth
-  • TTLCache (cachetools)                       tool result cache
-  • Jinja2 + Word/Pandoc/WeasyPrint             multi-engine PDF
-  • Filesystem: output/session_{thread_id}/trip_v{N}.{md,pdf}
+    subgraph API["⚡ FastAPI service · api/server.py"]
+        REST["REST · /api/trip · /refine · /files"]
+        WSE["WS · /ws/{thread_id} → ConnectionManager"]
+        Task["asyncio.create_task"]
+        REST --> Task
+    end
+
+    subgraph AG["🧠 LangGraph orchestration · agent/"]
+        PG["plan_graph (12 nodes)"]
+        RG["refine_graph"]
+        Saver[("InMemorySaver · shared")]
+        Subs["LLM sub-agents · parse_intent / plan_itinerary / review_plan / parse_refine"]
+        PG -.- Saver
+        RG -.- Saver
+        PG --- Subs
+        RG --- Subs
+    end
+
+    subgraph TL["🔧 Tool layer · TravelTool wrapper (auto-reports to Monitor)"]
+        TW[Weather]
+        TF[Flight]
+        TH[Hotel]
+        TP[POI]
+    end
+
+    subgraph PV["🔌 Provider adapter"]
+        Mock["Mock"]
+        Real["Real"]
+    end
+
+    FE <-->|"HTTP (axios) + WebSocket"| API
+    Task --> AG
+    AG --> TL
+    TL --> PV
 ```
+
+> **Cross-cutting concerns**
+> - `ContextVar(session_dir, thread_id)` — per-coroutine session isolation
+> - `Monitor` singleton + `run_coroutine_threadsafe` — reverse push to WS from any depth
+> - `TTLCache (cachetools)` — tool result cache
+> - `Jinja2` + `Word` / `Pandoc` / `WeasyPrint` — multi-engine PDF
+> - Filesystem: `output/session_{thread_id}/trip_v{N}.{md,pdf}`
 
 ---
 
@@ -218,39 +232,30 @@ TravelPlanningAgent/
 
 #### Plan graph (`agent/plan_graph.py`) — first-time planning
 
-```
-                     START
-                       │
-                       ▼
-              validate_input   ── validate / fill defaults / compute date_range
-                       │
-                       ▼
-               parse_intent    ── LLM: extract constraints
-       ┌───────────────┼───────────────┬───────────────┐
-       ▼               ▼               ▼               ▼
-  fetch_weather   fetch_flights   fetch_hotels   fetch_pois     (parallel fan-out)
-       └───────────────┴───────────────┴───────────────┘
-                       │  (implicit join)
-                       ▼
-                 cluster_pois   ── cluster by area → N day buckets
-                       │
-                       ▼
-                plan_itinerary  ◄────┐
-                       │             │
-                       ▼             │ failed & retry < 2
-              estimate_budget        │
-                       │             │
-                       ▼             │
-                 review_plan ────────┘  (LLM self-review)
-                       │ passed
-                       ▼
-                  render_pdf   ── MD (always) + PDF (best-effort)
-                       │
-                       ▼
-                   finalize    ── push task_result
-                       │
-                       ▼
-                      END
+```mermaid
+flowchart TD
+    Start([START]) --> VI["validate_input · validate / fill defaults / compute date_range"]
+    VI --> PI["parse_intent · LLM extracts constraints"]
+    PI --> FW[fetch_weather]
+    PI --> FF[fetch_flights]
+    PI --> FH[fetch_hotels]
+    PI --> FP[fetch_pois]
+    FW --> CP["cluster_pois · cluster by area → N day buckets"]
+    FF --> CP
+    FH --> CP
+    FP --> CP
+    CP --> PL[plan_itinerary]
+    PL --> EB[estimate_budget]
+    EB --> RP{"review_plan · LLM self-review"}
+    RP -->|"failed & retry &lt; 2"| PL
+    RP -->|"passed"| RD["render_pdf · MD (always) + PDF (best-effort)"]
+    RD --> FN["finalize · push task_result"]
+    FN --> End([END])
+
+    classDef parallel fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef llm fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+    class FW,FF,FH,FP parallel
+    class PI,PL,RP llm
 ```
 
 **Key implementation points**
@@ -263,25 +268,32 @@ TravelPlanningAgent/
 
 #### Refine graph (`agent/refine_graph.py`) — multi-turn adjustment
 
-```
-            START → load_previous_state → parse_refine_intent
-                                                │
-                                  ┌─────────────┼─────────────┐
-                                  ▼             ▼             ▼
-                            dispatcher_router (conditional, by dirty_nodes)
-                            ┌─────────┬──────────┬──────────┐
-                            ▼         ▼          ▼          ▼
-                       fetch_w   fetch_f   fetch_h    fetch_p → cluster_pois
-                            └─────────┴──────────┴──────────┘
-                                            │
-                                            ▼
-                                     plan_itinerary
-                                            │
-                                            ▼
-                                     estimate_budget → review_plan_lite
-                                            │
-                                            ▼
-                                     render_pdf → finalize (v+1) → END
+```mermaid
+flowchart TD
+    Start([START]) --> LP["load_previous_state · read v_n from saver"]
+    LP --> PRI["parse_refine_intent · LLM → RefineIntent + dirty_nodes"]
+    PRI --> DR{"dispatcher_router · routed by dirty_nodes"}
+    DR -.->|"fetch_weather ∈ dirty"| FW[fetch_weather]
+    DR -.->|"fetch_flights ∈ dirty"| FF[fetch_flights]
+    DR -.->|"fetch_hotels ∈ dirty"| FH[fetch_hotels]
+    DR -.->|"fetch_pois ∈ dirty"| FP[fetch_pois]
+    DR -.->|"otherwise skip fetch"| PL[plan_itinerary]
+    FP --> CP[cluster_pois]
+    FW --> PL
+    FF --> PL
+    FH --> PL
+    CP --> PL
+
+    PL --> EB[estimate_budget]
+    EB --> RPL[review_plan_lite]
+    RPL --> RD["render_pdf · trip_v(n+1)"]
+    RD --> FN["finalize · version+1"]
+    FN --> End([END])
+
+    classDef parallel fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef llm fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+    class FW,FF,FH,FP,CP parallel
+    class PRI,PL,RPL llm
 ```
 
 The `refine_intent.type` → `dirty_nodes` mapping lives in `models/refine.py::DIRTY_MAP`:
@@ -332,23 +344,25 @@ Three pieces let any code, at any depth, push events to the right WebSocket clie
 3. **`api/connection_manager.py::ConnectionManager`** — keeps a
    `Dict[thread_id → WebSocket]`; `send_to_thread` picks the right socket and sends.
 
-```
-[Tool / Node]           monitor.report_tool("WeatherTool", {...})
-       │                              │
-       ▼                              ▼
-[Monitor singleton] ── get_thread_id() ──→ resolve thread_id
-       │
-       ▼
-asyncio.run_coroutine_threadsafe(
-    manager.send_to_thread(payload, thread_id),
-    manager.loop    ← bound during FastAPI lifespan startup
-)
-       ▼
-[ConnectionManager.send_to_thread]
-    ws = active_connections[thread_id]
-    await ws.send_json(payload)
-       ▼
-[Frontend ws.onmessage] → chat store handleEvent → mutate messages[].logs
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as Tool / Node
+    participant M as Monitor (singleton)
+    participant CV as ContextVar
+    participant L as FastAPI loop
+    participant CM as ConnectionManager
+    participant W as WebSocket
+    participant FS as Frontend chat store
+
+    T->>M: report_tool("WeatherTool", {...})
+    M->>CV: get_thread_id()
+    CV-->>M: thread_id
+    M->>L: run_coroutine_threadsafe(send_to_thread)
+    L->>CM: send_to_thread(payload, thread_id)
+    CM->>W: ws.send_json(payload)
+    W->>FS: onmessage
+    FS->>FS: handleEvent → mutate messages[].logs
 ```
 
 **Why this matters**: nodes/tools stay plain `async def` functions — no websocket reference threading, no parameter sprawl, and concurrency-safe across users.
@@ -387,15 +401,17 @@ asyncio.run_coroutine_threadsafe(
 
 ### Tool Layer (Mock/Real Switching)
 
-```
-TravelTool.fetch(**kwargs)
-    │
-    ├─ monitor.report_tool_start(name, kwargs)
-    ├─ cache.get(key=tool+provider+sha1(kwargs))      ← short-circuit on hit
-    ├─ provider.fetch(**kwargs)                       ← Mock or Real
-    │     └─ on failure → provider.fallback.fetch(**kwargs)  (optional)
-    ├─ cache.set(key, result)
-    └─ monitor.report_tool_end(name, summary)
+```mermaid
+flowchart LR
+    A["TravelTool.fetch(**kwargs)"] --> B["monitor.report_tool_start(name, kwargs)"]
+    B --> C{"cache.get · key=tool+provider+sha1(kwargs)"}
+    C -->|"hit"| F["monitor.report_tool_end(name, summary)"]
+    C -->|"miss"| D["provider.fetch · Mock | Real"]
+    D -->|"ok"| E["cache.set(key, result)"]
+    D -->|"fail & has fallback"| D2["provider.fallback.fetch"]
+    D2 --> E
+    E --> F
+    F --> G([result])
 ```
 
 - `tools/factory.py` picks the provider based on `USE_MOCK_TOOLS`; future expansion is a routing table edit
@@ -424,23 +440,25 @@ Notable details:
 
 ### Component Tree
 
-```
-App.vue (three-column layout)
-├── HistorySidebar.vue          ← Pinia history store, persisted to localStorage
-├── main
-│   ├── topbar (status dot + thread_id)
-│   ├── no session:    WelcomeScreen.vue
-│   │                   ├── 4 example prompt chips
-│   │                   └── InputBox(showForm=true) → TripFormInline
-│   └── in session:    ChatStream.vue + InputBox(showForm=false)
-│                       └── ChatStream
-│                            ├── MessageUser.vue (user bubble)
-│                            └── MessageAi.vue
-│                                 ├── ThoughtProcess.vue (collapsible)
-│                                 │    └── ToolCallCard.vue × N
-│                                 ├── marked + DOMPurify markdown
-│                                 └── FileCard.vue × N (PDF/MD download)
-└── FilesSidebar.vue            ← chat.files (live-synced)
+```mermaid
+flowchart TB
+    App["App.vue · three-column layout"]
+    App --> HS[HistorySidebar.vue]
+    App --> Main["main area"]
+    App --> FS[FilesSidebar.vue]
+    Main --> Top["topbar · status dot + thread_id"]
+    Main --> WS["WelcomeScreen.vue (no session)"]
+    Main --> CS["ChatStream.vue + InputBox (in session)"]
+    WS --> Chips["4 example prompt chips"]
+    WS --> Form["InputBox(showForm=true) → TripFormInline"]
+    CS --> MU["MessageUser.vue · user bubble"]
+    CS --> MA[MessageAi.vue]
+    MA --> TP["ThoughtProcess.vue · collapsible"]
+    MA --> MD["marked + DOMPurify · markdown render"]
+    MA --> FC["FileCard.vue × N · PDF/MD download"]
+    TP --> TC["ToolCallCard.vue × N"]
+    HS -.- HStore["history store · localStorage"]
+    FS -.- ChatFiles["chat.files · live-synced"]
 ```
 
 ### Pinia State Management
@@ -500,100 +518,75 @@ The `TripWS` class in `ui/src/api/ws.ts` provides:
 
 ### First-time Planning
 
-```
-[1] User fills the form on WelcomeScreen + types instructions → clicks ➤
-       │
-       ▼
-[2] chat.startNewTrip(req, displayText)
-       ├─ messages.push(user + emptyAi)
-       ├─ POST /api/trip ──→ {trip_id, thread_id, version:1}
-       ├─ ensureWs(thread_id) ── new WebSocket(/ws/{thread_id})
-       └─ history.upsert(...)
-       │
-       ▼ (backend)
-[3] api/server.py::create_trip
-       └─ asyncio.create_task(run_plan_agent(payload, thread_id, trip_id))
-              │
-              ▼
-[4] agent/plan_agent.py
-       ├─ set_session_context / set_thread_context (ContextVar)
-       ├─ monitor.report_session_dir(...)        ──→ WS: session_created
-       └─ build_plan_graph().ainvoke(initial, config={thread_id})
-              │
-              ▼
-[5] plan_graph runs (each node)
-       ├─ @_timed: monitor.report_node_start    ──→ WS: node_start
-       ├─ TravelTool.fetch
-       │     ├─ monitor.report_tool_start       ──→ WS: tool_start
-       │     ├─ provider.fetch (Mock / Real)
-       │     └─ monitor.report_tool_end         ──→ WS: tool_end
-       ├─ LLM call (Mock / GPT-4o)
-       └─ @_timed: monitor.report_node_end      ──→ WS: node_end
-              │
-              ▼
-[6] review_plan
-       └─ monitor.report_review(iter, passed)   ──→ WS: review_iteration
-              │ (passed)
-              ▼
-[7] render_pdf
-       ├─ Jinja2 → trip_v1.md
-       ├─ convert_md_to_pdf_real → trip_v1.pdf (best-effort)
-       └─ files = [{name, path, url, ...}]
-              │
-              ▼
-[8] finalize
-       └─ monitor.report_task_result(summary, version, files) ──→ WS: task_result
-              │
-              ▼ (frontend)
-[9] chat.handleEvent('task_result')
-       ├─ lastAi.content = result
-       ├─ lastAi.files = files
-       ├─ lastAi.status = 'done'
-       ├─ status = 'ok'
-       └─ refreshFiles() ── GET /api/files?thread_id=...
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant FE as Frontend (chat store)
+    participant API as FastAPI
+    participant AG as plan_agent / plan_graph
+    participant T as TravelTool
+    participant LLM as LLM
+    participant W as WebSocket
 
-Throughout the run, every node_*/tool_*/review_* event flows into messages[lastAi].logs[]
-in real time, and ThoughtProcess renders them inside its collapsible panel.
+    U->>FE: Fill form + type prompt → ➤
+    FE->>API: POST /api/trip
+    API-->>FE: {trip_id, thread_id, version:1}
+    FE->>W: new WebSocket(/ws/{thread_id})
+    API->>AG: asyncio.create_task(run_plan_agent)
+    AG->>W: session_created
+    AG->>AG: build_plan_graph().ainvoke(...)
+
+    loop each node
+        AG->>W: node_start
+        AG->>T: TravelTool.fetch
+        T->>W: tool_start
+        T->>T: provider.fetch (Mock / Real)
+        T->>W: tool_end
+        AG->>LLM: invoke (Mock / GPT-4o)
+        AG->>W: node_end
+    end
+
+    AG->>W: review_iteration (passed)
+    AG->>AG: render_pdf → trip_v1.md / pdf
+    AG->>W: task_result(version, files)
+    W-->>FE: push
+    FE->>FE: lastAi.content / files; status=ok
+    FE->>API: GET /api/files?thread_id=...
 ```
+
+> Throughout the run, every `node_*` / `tool_*` / `review_*` event flows into `messages[lastAi].logs[]` in real time, and `ThoughtProcess` renders them inside its collapsible panel.
 
 ### Multi-turn Refinement
 
-```
-[1] In an existing session, user types "Replace day 3 with indoor activities" → ➤
-       │
-       ▼
-[2] chat.sendRefine(instruction)
-       ├─ messages.push(user + emptyAi)
-       └─ POST /api/trip/{thread_id}/refine
-       │
-       ▼ (backend)
-[3] api/server.py::refine_trip
-       └─ asyncio.create_task(run_refine_agent(instruction, thread_id))
-              │
-              ▼
-[4] agent/refine_agent.py
-       └─ build_refine_graph().ainvoke({"refine_request": instruction}, config={thread_id})
-              │
-              ▼
-[5] load_previous_state (read v_n from InMemorySaver)
-       └─ version = v_n + 1
-              │
-              ▼
-[6] parse_refine_intent (LLM)
-       └─ {refine_intent: {type:'rework_day', targets:['day_3']},
-           dirty_nodes: {plan_itinerary}}
-              │
-              ▼
-[7] dispatcher_router(state) → ['plan_itinerary']  (next-hop based on dirty_nodes)
-              │
-              ▼
-[8] plan_itinerary → estimate_budget → review_plan_lite → render_pdf (trip_v2.md/pdf)
-              │
-              ▼
-[9] finalize → task_result(version=2, files=[...trip_v2.*])
-              │
-              ▼
-[10] Frontend: the new AI message gets its content/files; FilesSidebar adds trip_v2.pdf
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant FE as Frontend (chat store)
+    participant API as FastAPI
+    participant AG as refine_agent / refine_graph
+    participant Sv as InMemorySaver
+    participant LLM as LLM
+    participant W as WebSocket
+
+    U->>FE: Type "Replace day 3 with indoor activities" → ➤
+    FE->>API: POST /api/trip/{thread_id}/refine
+    API->>AG: asyncio.create_task(run_refine_agent)
+
+    AG->>Sv: aget_tuple(config) — read v_n
+    Sv-->>AG: previous state
+    AG->>AG: version = v_n + 1
+
+    AG->>LLM: parse_refine_intent
+    LLM-->>AG: refine_intent + dirty_nodes={plan_itinerary}
+    AG->>AG: dispatcher_router → ['plan_itinerary']
+
+    AG->>AG: plan_itinerary → estimate_budget → review_plan_lite
+    AG->>AG: render_pdf → trip_v(n+1).md / pdf
+    AG->>W: task_result(version=n+1, files)
+    W-->>FE: push
+    FE->>FE: new AI message content/files; FilesSidebar adds trip_v(n+1).pdf
 ```
 
 ---
