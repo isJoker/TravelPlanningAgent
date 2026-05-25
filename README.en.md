@@ -522,37 +522,37 @@ The `TripWS` class in `ui/src/api/ws.ts` provides:
 sequenceDiagram
     autonumber
     actor U as User
-    participant FE as Frontend (chat store)
+    participant FE as Frontend
     participant API as FastAPI
-    participant AG as plan_agent / plan_graph
+    participant AG as PlanGraph
     participant T as TravelTool
     participant LLM as LLM
     participant W as WebSocket
 
-    U->>FE: Fill form + type prompt → ➤
+    U->>FE: Fill form and prompt, then send
     FE->>API: POST /api/trip
-    API-->>FE: {trip_id, thread_id, version:1}
-    FE->>W: new WebSocket(/ws/{thread_id})
-    API->>AG: asyncio.create_task(run_plan_agent)
+    API-->>FE: returns trip_id, thread_id, version=1
+    FE->>W: open WebSocket ws/thread_id
+    API->>AG: asyncio.create_task schedules run_plan_agent
     AG->>W: session_created
-    AG->>AG: build_plan_graph().ainvoke(...)
+    AG->>AG: build_plan_graph state machine starts
 
     loop each node
         AG->>W: node_start
         AG->>T: TravelTool.fetch
         T->>W: tool_start
-        T->>T: provider.fetch (Mock / Real)
+        T->>T: provider.fetch  Mock or Real
         T->>W: tool_end
-        AG->>LLM: invoke (Mock / GPT-4o)
+        AG->>LLM: invoke Mock or GPT-4o
         AG->>W: node_end
     end
 
-    AG->>W: review_iteration (passed)
-    AG->>AG: render_pdf → trip_v1.md / pdf
-    AG->>W: task_result(version, files)
+    AG->>W: review_iteration  passed
+    AG->>AG: render_pdf produces trip_v1.md and pdf
+    AG->>W: task_result with version and files
     W-->>FE: push
-    FE->>FE: lastAi.content / files; status=ok
-    FE->>API: GET /api/files?thread_id=...
+    FE->>FE: update current AI message, status=ok
+    FE->>API: GET /api/files
 ```
 
 > Throughout the run, every `node_*` / `tool_*` / `review_*` event flows into `messages[lastAi].logs[]` in real time, and `ThoughtProcess` renders them inside its collapsible panel.
@@ -563,30 +563,30 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     actor U as User
-    participant FE as Frontend (chat store)
+    participant FE as Frontend
     participant API as FastAPI
-    participant AG as refine_agent / refine_graph
+    participant AG as RefineGraph
     participant Sv as InMemorySaver
     participant LLM as LLM
     participant W as WebSocket
 
-    U->>FE: Type "Replace day 3 with indoor activities" → ➤
-    FE->>API: POST /api/trip/{thread_id}/refine
-    API->>AG: asyncio.create_task(run_refine_agent)
+    U->>FE: Type  Replace day 3 with indoor activities
+    FE->>API: POST /api/trip/thread_id/refine
+    API->>AG: asyncio.create_task schedules run_refine_agent
 
-    AG->>Sv: aget_tuple(config) — read v_n
-    Sv-->>AG: previous state
+    AG->>Sv: aget_tuple reads previous v_n state
+    Sv-->>AG: returns full v_n state
     AG->>AG: version = v_n + 1
 
     AG->>LLM: parse_refine_intent
-    LLM-->>AG: refine_intent + dirty_nodes={plan_itinerary}
-    AG->>AG: dispatcher_router → ['plan_itinerary']
+    LLM-->>AG: returns RefineIntent and dirty_nodes
+    AG->>AG: dispatcher_router routes to plan_itinerary
 
-    AG->>AG: plan_itinerary → estimate_budget → review_plan_lite
-    AG->>AG: render_pdf → trip_v(n+1).md / pdf
-    AG->>W: task_result(version=n+1, files)
+    AG->>AG: plan_itinerary then estimate_budget then review_plan_lite
+    AG->>AG: render_pdf produces trip new version
+    AG->>W: task_result with new version and files
     W-->>FE: push
-    FE->>FE: new AI message content/files; FilesSidebar adds trip_v(n+1).pdf
+    FE->>FE: new AI message ready, FilesSidebar adds new pdf
 ```
 
 ---

@@ -522,37 +522,37 @@ actions:
 sequenceDiagram
     autonumber
     actor U as 用户
-    participant FE as Frontend (chat store)
+    participant FE as Frontend
     participant API as FastAPI
-    participant AG as plan_agent / plan_graph
+    participant AG as PlanGraph
     participant T as TravelTool
     participant LLM as LLM
     participant W as WebSocket
 
-    U->>FE: 填表 + 输入诉求 → ➤
+    U->>FE: 填表与输入诉求, 点击发送
     FE->>API: POST /api/trip
-    API-->>FE: {trip_id, thread_id, version:1}
-    FE->>W: new WebSocket(/ws/{thread_id})
-    API->>AG: asyncio.create_task(run_plan_agent)
+    API-->>FE: 返回 trip_id 与 thread_id, version=1
+    FE->>W: 建立 WebSocket 连接 ws/thread_id
+    API->>AG: asyncio.create_task 调度 run_plan_agent
     AG->>W: session_created
-    AG->>AG: build_plan_graph().ainvoke(...)
+    AG->>AG: 启动 build_plan_graph 状态机
 
     loop 每个节点
         AG->>W: node_start
         AG->>T: TravelTool.fetch
         T->>W: tool_start
-        T->>T: provider.fetch (Mock / Real)
+        T->>T: provider.fetch  Mock 或 Real
         T->>W: tool_end
-        AG->>LLM: 调用 (Mock / GPT-4o)
+        AG->>LLM: 调用 Mock 或 GPT-4o
         AG->>W: node_end
     end
 
-    AG->>W: review_iteration (passed)
-    AG->>AG: render_pdf → trip_v1.md / pdf
-    AG->>W: task_result(version, files)
-    W-->>FE: 推送
-    FE->>FE: lastAi.content / files; status=ok
-    FE->>API: GET /api/files?thread_id=...
+    AG->>W: review_iteration  passed
+    AG->>AG: render_pdf 生成 trip_v1.md 与 trip_v1.pdf
+    AG->>W: task_result 携带 version 与 files
+    W-->>FE: 推送事件
+    FE->>FE: 更新当前 AI 消息 status=ok
+    FE->>API: GET /api/files
 ```
 
 > 期间，所有 `node_*` / `tool_*` / `review_*` 事件实时进入 `messages[lastAi].logs[]`，`ThoughtProcess` 组件自动显示在折叠面板中。
@@ -563,30 +563,30 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     actor U as 用户
-    participant FE as Frontend (chat store)
+    participant FE as Frontend
     participant API as FastAPI
-    participant AG as refine_agent / refine_graph
+    participant AG as RefineGraph
     participant Sv as InMemorySaver
     participant LLM as LLM
     participant W as WebSocket
 
-    U->>FE: 输入 "把第 3 天换成室内活动" → ➤
-    FE->>API: POST /api/trip/{thread_id}/refine
-    API->>AG: asyncio.create_task(run_refine_agent)
+    U->>FE: 输入 把第3天换成室内活动
+    FE->>API: POST /api/trip/thread_id/refine
+    API->>AG: asyncio.create_task 调度 run_refine_agent
 
-    AG->>Sv: aget_tuple(config) — 读 v_n
-    Sv-->>AG: 上一版 state
+    AG->>Sv: aget_tuple 读取上一版 state v_n
+    Sv-->>AG: 返回 v_n 完整状态
     AG->>AG: version = v_n + 1
 
     AG->>LLM: parse_refine_intent
-    LLM-->>AG: refine_intent + dirty_nodes={plan_itinerary}
-    AG->>AG: dispatcher_router → ['plan_itinerary']
+    LLM-->>AG: 返回 RefineIntent 与 dirty_nodes
+    AG->>AG: dispatcher_router 选中 plan_itinerary
 
-    AG->>AG: plan_itinerary → estimate_budget → review_plan_lite
-    AG->>AG: render_pdf → trip_v(n+1).md / pdf
-    AG->>W: task_result(version=n+1, files)
-    W-->>FE: 推送
-    FE->>FE: 新 AI 消息 content/files; FilesSidebar 多出 trip_v(n+1).pdf
+    AG->>AG: plan_itinerary 然后 estimate_budget 然后 review_plan_lite
+    AG->>AG: render_pdf 生成 trip 新版本
+    AG->>W: task_result 携带新版本号与 files
+    W-->>FE: 推送事件
+    FE->>FE: 新 AI 消息就位, FilesSidebar 多出新版 pdf
 ```
 
 ---
