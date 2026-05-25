@@ -2,21 +2,21 @@
 
 Each node is an async function ``(state) -> partial_state``. Side effects
 (WS push) go through the ``monitor`` singleton; reading the current
-session_dir / thread_id goes through ``api.context``. Tools call the
+session_dir / thread_id goes through ``core.context``. Tools call the
 ``monitor`` themselves so we don't have to push tool events here.
 """
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Dict, List
 from urllib.parse import quote
 
-from api.context import get_session_dir, get_thread_id
-from api.logger import logger
-from api.monitor import monitor
+from core.context import get_session_dir, get_thread_id
+from core.logger import logger
+from core.monitor import monitor
 from agent import agents
+from agent._timed import timed as _timed
 from services.pdf_renderer import render_report
 from tools.base import FlightTool, HotelTool, POITool, WeatherTool
 from tools.factory import (
@@ -25,30 +25,6 @@ from tools.factory import (
     get_poi_provider,
     get_weather_provider,
 )
-
-
-# ---------- decorators ----------
-def _timed(node_name: str):
-    """Wrap a node coroutine so it emits node_start / node_end events automatically."""
-
-    def deco(fn: Callable[..., Awaitable[Dict[str, Any]]]):
-        async def wrapper(state: Dict[str, Any]) -> Dict[str, Any]:
-            monitor.report_node_start(node_name)
-            t0 = time.perf_counter()
-            try:
-                result = await fn(state)
-            except Exception as e:
-                monitor.report_error(node_name, str(e))
-                raise
-            duration = (time.perf_counter() - t0) * 1000
-            summary = result.pop("_summary", None) if isinstance(result, dict) else None
-            monitor.report_node_end(node_name, duration, summary)
-            return result or {}
-
-        wrapper.__name__ = node_name
-        return wrapper
-
-    return deco
 
 
 # ---------- helpers ----------

@@ -5,32 +5,12 @@ the entry, intent parser, and dispatcher are refine-specific.
 """
 from __future__ import annotations
 
-import time
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Dict, List
 
-from api.logger import logger
-from api.monitor import monitor
+from core.checkpointer import get_checkpointer
+from core.logger import logger
 from agent import agents
-from agent.checkpointer import get_checkpointer
-
-
-def _timed(node_name: str):
-    def deco(fn: Callable[..., Awaitable[Dict[str, Any]]]):
-        async def wrapper(state: Dict[str, Any]) -> Dict[str, Any]:
-            monitor.report_node_start(node_name)
-            t0 = time.perf_counter()
-            try:
-                out = await fn(state)
-            except Exception as e:
-                monitor.report_error(node_name, str(e))
-                raise
-            duration = (time.perf_counter() - t0) * 1000
-            summary = out.pop("_summary", None) if isinstance(out, dict) else None
-            monitor.report_node_end(node_name, duration, summary)
-            return out or {}
-        wrapper.__name__ = node_name
-        return wrapper
-    return deco
+from agent._timed import timed as _timed
 
 
 # ============================================================
@@ -96,16 +76,15 @@ async def parse_refine_intent(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================
-#  route_refine_dispatcher  (decides which fetch nodes to run)
+#  dispatcher_router  (LangGraph conditional-edge function)
 # ============================================================
-@_timed("route_refine_dispatcher")
-async def route_refine_dispatcher(state: Dict[str, Any]) -> Dict[str, Any]:
-    dirty = state.get("dirty_nodes") or set()
-    return {"_summary": f"派发：{sorted(dirty)}"}
-
-
 def dispatcher_router(state: Dict[str, Any]) -> List[str]:
-    """Return the next-hop node list. LangGraph supports list outputs for fan-out."""
+    """Decide which fetch nodes to re-run based on ``dirty_nodes``.
+
+    Returning a list of node names lets LangGraph fan out to all of them in
+    parallel. If nothing needs to be re-fetched we jump straight to
+    ``plan_itinerary``.
+    """
     dirty = state.get("dirty_nodes") or set()
     next_nodes: List[str] = []
     if "fetch_weather" in dirty:
@@ -117,6 +96,5 @@ def dispatcher_router(state: Dict[str, Any]) -> List[str]:
     if "fetch_pois" in dirty:
         next_nodes.append("fetch_pois")
     if not next_nodes:
-        # No fetches needed: jump straight to plan_itinerary.
         return ["plan_itinerary"]
     return next_nodes

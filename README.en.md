@@ -162,45 +162,57 @@ flowchart TB
 
 ## Project Layout
 
+> **Layering principle**: dependencies flow strictly top-down — `core/` is a leaf package
+> (stdlib + third-party only), every other package may import from `core/*`,
+> and `core/` never imports `agent/`, `api/`, `tools/`, `services/`, or `domain/`.
+> Cycles are impossible by construction.
+
 ```
 TravelPlanningAgent/
-├── api/                         FastAPI service layer
-│   ├── server.py                  REST + WS entry; asyncio.create_task to schedule agent
-│   ├── connection_manager.py      WebSocket connection registry (routed by thread_id)
+├── core/                        🧰 Cross-cutting runtime infrastructure (leaf)
+│   ├── logger.py                  Loguru config (singleton ``logger``)
+│   ├── context.py                 ContextVar(session_dir, thread_id) — coroutine-level isolation
 │   ├── monitor.py                 ToolMonitor singleton; cross-coroutine targeted push
-│   ├── context.py                 ContextVar(session_dir, thread_id)
-│   ├── schemas.py                 HTTP request/response Pydantic models
-│   └── logger.py                  Loguru config
+│   ├── llm.py                     MockLLM / RealLLM (init_chat_model) + build_llm()
+│   ├── checkpointer.py            InMemorySaver singleton factory (shared by both graphs)
+│   └── prompts.py                 YAML prompt loader + safe {var} substitution
 │
-├── agent/                       LangGraph orchestration
+├── api/                         🌐 FastAPI HTTP boundary (slim)
+│   ├── server.py                  REST + WS entry; asyncio.create_task to schedule the agent
+│   ├── connection_manager.py      WebSocket registry by thread_id (coupled to fastapi.WebSocket)
+│   └── schemas.py                 HTTP request / response Pydantic models
+│
+├── agent/                       🧠 LangGraph orchestration (pure domain)
 │   ├── plan_agent.py              First-time planning entry (binds ContextVar, invokes graph)
 │   ├── refine_agent.py            Multi-turn refinement entry
 │   ├── plan_graph.py              build_plan_graph() — 12-node state machine
 │   ├── refine_graph.py            build_refine_graph() — reuses plan nodes + dispatcher
-│   ├── nodes.py                   12 plan-graph nodes (with @_timed decorator)
-│   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher
+│   ├── nodes.py                   12 plan-graph nodes
+│   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher_router
+│   ├── _timed.py                  Shared @timed decorator (DRY across plan + refine nodes)
 │   ├── agents.py                  4 LLM sub-agents (independent LLM instances)
-│   ├── llm.py                     MockLLM / RealLLM (init_chat_model)
-│   ├── checkpointer.py            InMemorySaver singleton factory
-│   ├── load_prompts.py            YAML prompt loader + safe {var} substitution
-│   └── state.py                   TripState (TypedDict + Annotated reducers)
+│   ├── state.py                   TripState (TypedDict + Annotated reducers)
+│   └── prompts/
+│       └── prompts.yaml           4 centralised prompt templates (loaded by core.prompts)
 │
-├── tools/                       Tool layer
+├── domain/                      📦 Pure data models / routing constants
+│   └── refine.py                  RefineIntent + DIRTY_MAP (refine type → dirty node set)
+│
+├── tools/                       🔧 Tool layer
 │   ├── base.py                    TravelTool wrapper (cache + monitor + fallback)
-│   ├── factory.py                 Provider factory (routes by USE_MOCK_TOOLS)
+│   ├── factory.py                 Provider factory (routed by USE_MOCK_TOOLS)
 │   ├── cache.py                   TTLCache (key = tool+provider+sha1(kwargs))
-│   ├── providers/base.py          BaseProvider abstraction
-│   └── mocks/                     mock_weather / mock_flight / mock_hotel / mock_poi
-│       └── fixtures/poi/          Tokyo / Beijing / Osaka offline POI data
+│   └── providers/                 Provider adapters (Mock + Real are siblings)
+│       ├── base.py                  BaseProvider abstraction
+│       └── mocks/                   mock_weather / mock_flight / mock_hotel / mock_poi
+│           └── fixtures/poi/        Tokyo / Beijing / Osaka offline POI data
 │
-├── models/refine.py             RefineIntent + DIRTY_MAP (refine type → dirty node set)
+├── services/                    🛠️ Domain services
+│   ├── pdf_renderer.py            Markdown rendering + multi-engine PDF conversion
+│   └── templates/
+│       └── trip_report.md         Jinja2 report template (co-located with renderer)
 │
-├── prompt/prompts.yaml          4 centralised prompt templates
-├── templates/trip_report.md     Jinja2 report template
-│
-├── services/pdf_renderer.py     Markdown rendering + multi-engine PDF conversion
-│
-├── ui/                          Vue 3 frontend
+├── ui/                          🖥️ Vue 3 frontend
 │   ├── src/
 │   │   ├── App.vue                Three-column layout: HistorySidebar / Main / FilesSidebar
 │   │   ├── api/{http,trip,ws}.ts  axios + REST + WebSocket client
@@ -212,17 +224,59 @@ TravelPlanningAgent/
 │   │   └── types/{chat,ws,trip}.ts
 │   └── vite.config.ts             Proxies /api /ws to backend
 │
-├── scripts/
-│   ├── smoke_test.py              Direct plan + refine graph run (no HTTP)
-│   ├── smoke_http.py              ASGI end-to-end + WS pipeline test
-│   └── run_*.sh                   Launch helpers
+├── scripts/                     🚀 Ops launchers
+│   ├── run_backend.sh             Boot backend (uvicorn api.server:app)
+│   └── run_frontend.sh            Boot frontend (npm run dev)
+│
+├── tests/                       ✅ Test suite (aligned with pyproject.toml::testpaths)
+│   └── smoke/
+│       ├── smoke_test.py          Direct plan + refine graph run (no HTTP)
+│       └── smoke_http.py          ASGI end-to-end + WS pipeline test
 │
 ├── output/session_{thread_id}/  Per-session artefacts (trip_v{N}.md / .pdf)
-├── DESIGN.md                    Full v0.3 design document (canonical reference)
+├── DESIGN.md                    Full design document (canonical reference)
 ├── requirements.txt
 ├── pyproject.toml
 └── README.md / README.en.md
 ```
+
+### Dependency Direction (at a glance)
+
+```
+            ┌─────────────────────────────────────────────┐
+            │  api  (HTTP boundary)                       │
+            │   server.py · schemas.py · connection_mgr   │
+            └─────────────┬───────────────────────────────┘
+                          │ depends only downward
+        ┌─────────────────┼──────────────────┐
+        ▼                 ▼                  ▼
+   ┌─────────┐      ┌──────────┐       ┌──────────┐
+   │  agent  │      │ services │       │  tools   │
+   │ (graphs │      │ (pdf,    │       │ (Travel  │
+   │  +nodes)│      │  jinja)  │       │  Tool +  │
+   │         │      │          │       │ provider)│
+   └────┬────┘      └────┬─────┘       └────┬─────┘
+        │                │                  │
+        └────────────────┼──────────────────┘
+                         ▼
+                ┌────────────────┐
+                │  core  (leaf)  │  ← logger / context / monitor /
+                │                │     llm / checkpointer / prompts
+                └────────────────┘
+                         ▲
+                ┌────────┴───────┐
+                │     domain     │  ← refine.py (data + routing table)
+                └────────────────┘
+```
+
+| Package | Role | Depends on |
+|---------|------|------------|
+| `core/` | Cross-cutting infra (leaf) | stdlib + third-party only |
+| `domain/` | Domain data models (leaf) | stdlib + Pydantic only |
+| `tools/` | Data-source tools + provider adapters | `core` |
+| `services/` | Domain services (PDF / templating) | `core` |
+| `agent/` | LangGraph orchestration | `core` · `domain` · `tools` · `services` |
+| `api/` | FastAPI HTTP boundary | `core` · `agent` |
 
 ---
 
@@ -296,7 +350,7 @@ flowchart TD
     class PRI,PL,RPL llm
 ```
 
-The `refine_intent.type` → `dirty_nodes` mapping lives in `models/refine.py::DIRTY_MAP`:
+The `refine_intent.type` → `dirty_nodes` mapping lives in `domain/refine.py::DIRTY_MAP`:
 
 | RefineType | dirty_nodes |
 |------------|-------------|
@@ -331,18 +385,19 @@ When parallel nodes write the same key, the reducer merges them safely — no ma
 
 ### Cross-coroutine Event Push (ContextVar + Monitor)
 
-Three pieces let any code, at any depth, push events to the right WebSocket client:
+Three pieces let any code, at any depth, push events to the right WebSocket client. All three live in `core/` (cross-cutting infrastructure) — except `connection_manager`, which stays at the HTTP boundary because it depends on `fastapi.WebSocket`:
 
-1. **`api/context.py`** — `session_dir` / `thread_id` are stored in `ContextVar`s.
+1. **`core/context.py`** — `session_dir` / `thread_id` are stored in `ContextVar`s.
    `run_plan_agent` writes them via `set_session_context` / `set_thread_context`,
    and the asyncio task plus its descendant coroutines inherit them automatically.
-2. **`api/monitor.py::ToolMonitor`** — process-wide singleton.
-   Tools and nodes simply do `from api.monitor import monitor` and call `report_*`.
+2. **`core/monitor.py::ToolMonitor`** — process-wide singleton.
+   Tools and nodes simply do `from core.monitor import monitor` and call `report_*`.
    The monitor reads `thread_id` from the ContextVar, then dispatches via
    `asyncio.run_coroutine_threadsafe(manager.send_to_thread(...), manager.loop)`
    onto the FastAPI main event loop.
 3. **`api/connection_manager.py::ConnectionManager`** — keeps a
    `Dict[thread_id → WebSocket]`; `send_to_thread` picks the right socket and sends.
+   Stays in `api/` because it is coupled to `fastapi.WebSocket` types.
 
 ```mermaid
 sequenceDiagram
@@ -369,26 +424,26 @@ sequenceDiagram
 
 ### Checkpointer & Multi-turn Refinement
 
-- `agent/checkpointer.py` exposes a singleton `get_checkpointer() → InMemorySaver`
+- `core/checkpointer.py` exposes a singleton `get_checkpointer() → InMemorySaver`
 - `plan_graph` and `refine_graph` **share the same saver**
 - Invocation uses `config = {"configurable": {"thread_id": thread_id}}`; LangGraph automatically loads/merges the checkpoint by thread_id
 - `refine_agent.run_refine_agent` only passes `{"refine_request": instruction}` — the rest is restored by the saver merge
 - `load_previous_state` calls `saver.aget_tuple(config)` to read `version`, then bumps it by 1
 
 > ⚠️ **Limitation**: InMemorySaver state is lost on process restart.
-> Upgrade path: swap `get_checkpointer()` to `SqliteSaver` or a custom Postgres saver.
+> Upgrade path: swap `core/checkpointer.py::get_checkpointer()` to `SqliteSaver` or a custom Postgres saver.
 > The interface is fully compatible — no business code changes.
 
 ### LLM Abstraction
 
-`agent/llm.py` ships two implementations plus a factory:
+`core/llm.py` ships two implementations plus a factory:
 
 | Class | Trigger | Behaviour |
 |-------|---------|-----------|
 | `MockLLM` | `MOCK_LLM=true` (default) or no `OPENAI_API_KEY` | Returns **structurally valid stub JSON** keyed off prompt markers (one shape per prompt kind) |
 | `RealLLM` | `MOCK_LLM=false` with a key | LangChain 1.0 `init_chat_model("gpt-4o", model_provider="openai", ...)` |
 
-`agents.py` instantiates an independent LLM per sub-agent so they can be swapped to different models later:
+`agent/agents.py` instantiates an independent LLM per sub-agent so they can be swapped to different models later:
 
 | Sub-agent | Called from | Input → Output |
 |-----------|-------------|----------------|
@@ -397,7 +452,7 @@ sequenceDiagram
 | `review_plan` | `review_plan` | itinerary/weather/budget → `{passed, issues, suggestions}` |
 | `parse_refine_intent` | `parse_refine_intent` | refine_request + summary → `RefineIntent + dirty_nodes` |
 
-`load_prompts.py` performs **manual `{var}` substitution** instead of `str.format` so the literal JSON braces inside templates are not misinterpreted.
+`core/prompts.py` performs **manual `{var}` substitution** instead of `str.format` so the literal JSON braces inside templates are not misinterpreted. Templates live in `agent/prompts/prompts.yaml`, co-located with their consumer.
 
 ### Tool Layer (Mock/Real Switching)
 
@@ -623,10 +678,10 @@ Two **headless smoke scripts** exercise the full graph + WS pipeline:
 
 ```bash
 # Plan + refine directly (produces trip_v1.md / trip_v2.md)
-PYTHONPATH=. python scripts/smoke_test.py
+PYTHONPATH=. python tests/smoke/smoke_test.py
 
 # End-to-end HTTP + Monitor→WS pipeline check
-PYTHONPATH=. python scripts/smoke_http.py
+PYTHONPATH=. python tests/smoke/smoke_http.py
 ```
 
 ---
@@ -729,14 +784,14 @@ Server messages always use `{ "event": <name>, "data": {...} }`:
 
 ## Smoke Tests
 
-Both scripts must stay green after backend changes:
+Both scripts must stay green after backend changes (aligned with `pyproject.toml::testpaths = ["tests"]`):
 
 ```text
-scripts/smoke_test.py    plan + refine produce trip_v1.md / trip_v2.md
-scripts/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../refine
-                         + Monitor→WS pipeline (asserts session_created, node_start×12,
-                            node_end×12, tool_start×5, tool_end×5,
-                            review_iteration, task_result)
+tests/smoke/smoke_test.py    plan + refine produce trip_v1.md / trip_v2.md
+tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../refine
+                             + Monitor→WS pipeline (asserts session_created, node_start×12,
+                                node_end×12, tool_start×5, tool_end×5,
+                                review_iteration, task_result)
 ```
 
 ---

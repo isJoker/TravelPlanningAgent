@@ -33,9 +33,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from api.logger import logger
+from core.logger import logger
 
-_TEMPLATE_DIR = Path(__file__).parents[1] / "templates"
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(
     loader=FileSystemLoader(str(_TEMPLATE_DIR)),
     autoescape=select_autoescape(enabled_extensions=("html", "j2")),
