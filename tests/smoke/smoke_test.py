@@ -1,7 +1,7 @@
 """End-to-end smoke test running the plan_graph directly (no HTTP/WS).
 
 Usage:
-    PYTHONPATH=. python scripts/smoke_test.py
+    PYTHONPATH=. python tests/smoke/smoke_test.py
 
 Ensures imports work, the graph compiles, and a Mock-mode plan completes
 producing a Markdown report on disk.
@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 # Default to fully offline mock mode unless explicitly overridden.

@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("MOCK_LLM", "true")
@@ -83,7 +83,7 @@ async def main() -> int:
     print("\n[ws] direct pipeline test…")
 
     from api.connection_manager import ConnectionManager
-    from api.monitor import monitor as global_monitor
+    from core.monitor import monitor as global_monitor
     from agent.plan_agent import run_plan_agent
 
     captured: list[dict] = []

@@ -4,7 +4,7 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from agent import nodes
-from agent.checkpointer import get_checkpointer
+from core.checkpointer import get_checkpointer
 from agent.state import TripState
 
 _compiled = None

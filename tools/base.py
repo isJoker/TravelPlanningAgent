@@ -9,8 +9,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from api.logger import logger
-from api.monitor import monitor
+from core.logger import logger
+from core.monitor import monitor
 from tools import cache
 from tools.providers.base import BaseProvider
 

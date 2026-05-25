@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from api.logger import logger
-from agent import load_prompts
-from agent.llm import build_llm
-from models.refine import DIRTY_MAP
+from core.logger import logger
+from core import prompts
+from core.llm import build_llm
+from domain.refine import DIRTY_MAP
 
 
 # Four independent LLM instances, one per agent
@@ -28,7 +28,7 @@ async def parse_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     if not bot_input.strip():
         return {"parsed_intent": {}, "constraints": {}}
 
-    prompt = load_prompts.render("parse_intent", bot_user_input=bot_input)
+    prompt = prompts.render("parse_intent", bot_user_input=bot_input)
     try:
         intent = await _llm_parse_intent.chat_json(prompt)
     except Exception as e:
@@ -55,7 +55,7 @@ async def parse_intent(state: Dict[str, Any]) -> Dict[str, Any]:
 #  plan_itinerary
 # ============================================================
 async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = load_prompts.render(
+    prompt = prompts.render(
         "plan_itinerary",
         days_num=state["days_num"],
         destination=state["destination"],
@@ -85,7 +85,7 @@ async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
 #  review_plan
 # ============================================================
 async def review_plan(state: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = load_prompts.render(
+    prompt = prompts.render(
         "review_plan",
         itinerary=state.get("itinerary") or [],
         weather=state.get("weather") or [],
@@ -118,7 +118,7 @@ async def review_plan(state: Dict[str, Any]) -> Dict[str, Any]:
 async def parse_refine_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     request = state.get("refine_request") or ""
     summary = _itinerary_summary(state.get("itinerary") or [])
-    prompt = load_prompts.render(
+    prompt = prompts.render(
         "parse_refine_intent",
         days_num=state.get("days_num", 0),
         itinerary_summary=summary,

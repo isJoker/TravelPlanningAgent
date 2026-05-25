@@ -16,8 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from api.connection_manager import ConnectionManager
-from api.logger import logger
-from api.monitor import monitor
+from core.logger import logger
+from core.monitor import monitor
 from api.schemas import (
     FileItem,
     FilesResponse,
