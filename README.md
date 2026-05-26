@@ -59,9 +59,9 @@
 | # | 特性 | 说明 |
 |---|------|------|
 | F-01 | 多源信息聚合 | 并行调用天气 / 机票 / 酒店 / POI 工具 |
-| F-02 | 智能行程编排 | 按片区聚类 + LLM 编排上午/中午/下午/晚上 4 时段 |
-| F-03 | 主题适配 | 亲子 / 蜜月 / 美食 / 户外 / 文化等主题影响 POI 选择与节奏 |
-| F-04 | 报告输出 | Markdown 始终生成；PDF 自动选择 Word COM / pandoc+xelatex / WeasyPrint |
+| F-02 | 智能行程编排 | 按片区聚类 + 节奏映射；每日含 meals / transport / 单日预估开销 / 预订提醒 |
+| F-03 | 主题适配 | 亲子 / 蜜月 / 美食 / 户外 / 文化等主题影响 POI 选择、节奏、餐厅密度、打包项 |
+| F-04 | 报告 6 大模块 | Markdown 始终生成（PDF 自动选择 Word COM / pandoc+xelatex / WeasyPrint）；包含每日行程 / 推荐机票酒店 / 预算（按 budget/mid-range/luxury 分档） / **打包清单** / **当地文化与安全** / **出行前准备 Timeline** |
 | F-05 | 自反思循环 | `review_plan` 不通过会回到 `plan_itinerary`，最多 2 次 |
 | F-06 | 失败降级 | 单个工具失败仅写入 `errors`，不阻塞主流程 |
 | F-07 | 多轮调整 | `refine_graph` 按 `dirty_nodes` 最小化重算，`version+1` |
@@ -69,7 +69,7 @@
 | F-09 | Web 前端 | Vue 3 Kiro 风格：欢迎页 → 聊天流 + 思维链 + 文件抽屉 |
 | F-10 | 实时推送 | 节点 / 工具 / 审稿迭代 / 任务结果通过 WebSocket 推送 |
 | F-11 | 多用户隔离 | `ContextVar` 在协程级隔离 `session_dir` / `thread_id` |
-| F-12 | Mock-to-Real | `USE_MOCK_TOOLS` / `MOCK_LLM` 一键切换数据源 |
+| F-12 | Mock-to-Real | `MOCK_LLM=false` 切 GPT-4o；`USE_MOCK_TOOLS=false` 走 QWeather / OpenWeatherMap / Amadeus / Amap 真实 Provider，**缺哪个 Key 就该工具单独降级 Mock**，不阻塞其余工具 |
 
 ---
 
@@ -91,7 +91,7 @@ flowchart TB
     end
 
     subgraph AG["🧠 LangGraph 编排层 · agent/"]
-        PG["plan_graph (12 节点)"]
+        PG["plan_graph (15 节点)"]
         RG["refine_graph"]
         Saver[("InMemorySaver · 共享")]
         Subs["LLM 子 agent · parse_intent / plan_itinerary / review_plan / parse_refine"]
@@ -184,15 +184,15 @@ TravelPlanningAgent/
 ├── agent/                       🧠 LangGraph 编排层（纯领域）
 │   ├── plan_agent.py              首次规划入口（设置 ContextVar、调度图）
 │   ├── refine_agent.py            多轮调整入口
-│   ├── plan_graph.py              build_plan_graph() — 12 节点状态机
+│   ├── plan_graph.py              build_plan_graph() — 15 节点状态机
 │   ├── refine_graph.py            build_refine_graph() — 复用 plan 节点 + 派发器
-│   ├── nodes.py                   12 个 plan-graph 节点
+│   ├── nodes.py                   plan-graph 节点（fetch / plan / 3 个 generator / review / render）
 │   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher_router
 │   ├── _timed.py                  共享 @timed 装饰器（plan + refine 节点共用）
-│   ├── agents.py                  4 个 LLM 子 agent（独立 LLM 实例）
+│   ├── agents.py                  7 个 LLM 子 agent（独立 LLM 实例）
 │   ├── state.py                   TripState (TypedDict + Annotated reducer)
 │   └── prompts/
-│       └── prompts.yaml           4 个集中式提示词模板（由 core.prompts 装载）
+│       └── prompts.yaml           7 个集中式提示词模板（plan 4 个 + skill 风格 3 个：pack_list / cultural_tips / pre_trip_checklist）
 │
 ├── domain/                      📦 纯领域数据模型 / 路由常量
 │   └── refine.py                  RefineIntent + DIRTY_MAP（refine 类型 → 脏节点集合）
@@ -203,6 +203,7 @@ TravelPlanningAgent/
 │   ├── cache.py                   TTLCache（key = tool+provider+sha1(kwargs)）
 │   └── providers/                 数据源适配器（Mock + Real 同级共存）
 │       ├── base.py                  BaseProvider 抽象
+│       ├── real/                    QWeather / OpenWeatherMap / Amadeus(机票+酒店) / Amap
 │       └── mocks/                   mock_weather / mock_flight / mock_hotel / mock_poi
 │           └── fixtures/poi/        东京 / 北京 / 大阪 离线 POI 数据
 │
@@ -298,7 +299,13 @@ flowchart TD
     FH --> CP
     FP --> CP
     CP --> PL[plan_itinerary]
+    CP --> GPL[generate_packing_list]
+    CP --> GCT[generate_cultural_tips]
+    CP --> GPT[generate_pre_trip_checklist]
     PL --> EB[estimate_budget]
+    GPL --> EB
+    GCT --> EB
+    GPT --> EB
     EB --> RP{"review_plan · LLM 自反思"}
     RP -->|"不通过 & retry &lt; 2"| PL
     RP -->|"passed"| RD["render_pdf · MD（必有）+ PDF（可选）"]
@@ -308,7 +315,7 @@ flowchart TD
     classDef parallel fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
     classDef llm fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
     class FW,FF,FH,FP parallel
-    class PI,PL,RP llm
+    class PI,PL,RP,GPL,GCT,GPT llm
 ```
 
 **关键实现点**
@@ -356,9 +363,9 @@ flowchart TD
 | `swap_poi` / `rework_day` / `change_pace` / `freeform` | `{plan_itinerary}` |
 | `change_hotel` | `{fetch_hotels, plan_itinerary}` |
 | `change_flight` | `{fetch_flights}` |
-| `change_theme` | `{fetch_pois, cluster_pois, plan_itinerary}` |
+| `change_theme` | `{fetch_pois, cluster_pois, plan_itinerary, generate_packing_list, generate_cultural_tips}` |
 | `change_budget` | `{fetch_hotels, plan_itinerary}` |
-| `extend_days` | 全部 fetch + cluster + plan |
+| `extend_days` | 全部 fetch + cluster + plan + `generate_packing_list` + `generate_pre_trip_checklist` |
 
 > 所有 refine 类型都强制重算 `estimate_budget` → `review_plan_lite` → `render_pdf` → `finalize`，确保最终产物自洽。
 
@@ -369,9 +376,11 @@ flowchart TD
 ```python
 class TripState(TypedDict, total=False):
     # 输入：destination / days_num / people_num / travel_theme / ...
-    # 解析：parsed_intent / date_range / constraints
+    # 解析：parsed_intent / date_range / constraints（含 budget_level / interests）
     # 聚合：weather / flights / hotels / pois / pois_clustered
-    # 规划：itinerary / budget / tips / summary
+    # 规划：itinerary（含 meals/transport/daily_cost_cny/booking_notes）
+    # 内容：packing_list / cultural_tips / pre_trip_checklist
+    # 预算：budget（按 tier 分档）/ daily_costs[] / tips / summary
     # 反思：review_passed / review_feedback / retry_count
     # 多轮：version / refine_request / refine_intent
     history:     Annotated[List[Dict], operator.add]   # 追加
@@ -439,15 +448,18 @@ sequenceDiagram
 
 | 类 | 触发条件 | 行为 |
 |-----|----------|------|
-| `MockLLM` | `MOCK_LLM=true`（默认）或缺 `OPENAI_API_KEY` | 按 prompt 关键词返回**结构化合规**的桩 JSON（4 种 prompt 各一种） |
+| `MockLLM` | `MOCK_LLM=true`（默认）或缺 `OPENAI_API_KEY` | 按 prompt 关键词返回**结构化合规**的桩 JSON（7 种 prompt 各一种） |
 | `RealLLM` | `MOCK_LLM=false` 且有 key | LangChain 1.0 `init_chat_model("gpt-4o", model_provider="openai", ...)` |
 
-`agent/agents.py` 中 4 个子 agent 各持有独立 LLM 实例，方便后续切不同模型：
+`agent/agents.py` 中 7 个子 agent 各持有独立 LLM 实例，方便后续切不同模型：
 
 | 子 agent | 调用节点 | 输入 → 输出 |
 |---------|---------|------------|
 | `parse_intent` | `parse_intent` | `bot_user_input` → `{parsed_intent, constraints}` |
 | `plan_itinerary` | `plan_itinerary` | weather/pois_clustered/constraints → `{itinerary, tips}` |
+| `generate_packing_list` | `generate_packing_list` | weather/days/theme → 7 类 checklist |
+| `generate_cultural_tips` | `generate_cultural_tips` | destination/theme → dos/donts/dining/safety/phrases |
+| `generate_pre_trip_checklist` | `generate_pre_trip_checklist` | destination/start_date/days → 5 段反推 timeline |
 | `review_plan` | `review_plan` | itinerary/weather/budget → `{passed, issues, suggestions}` |
 | `parse_refine_intent` | `parse_refine_intent` | refine_request + 摘要 → `RefineIntent + dirty_nodes` |
 
@@ -468,9 +480,15 @@ flowchart LR
     F --> G([result])
 ```
 
-- `tools/factory.py` 按 `USE_MOCK_TOOLS` 选 provider；将来扩展时改路由表即可
+- `tools/factory.py` 按 `USE_MOCK_TOOLS` + 目的地中/海外 + 各 Key 是否齐全做路由：
+  - 国内天气 → QWeather；海外 → OpenWeatherMap
+  - 机票 / 酒店 → Amadeus（test env 免费 2000/月）
+  - 国内 POI → Amap；海外暂走 Mock
+- **单工具降级**：缺某个 Provider 的 Key 时，**只有该工具退回 Mock**（一行 warning），其他工具该走真实就走真实，主流程不受影响
+- 真实 Provider 抛错也会走 `BaseProvider.fallback`，自动回退到对应 Mock
 - Mock provider 用 `hashlib.sha1(seed).hexdigest()` 做随机种子，**相同输入永远输出相同结果**（截图/测试友好）
 - POI fixtures 已内置 **东京 / 北京 / 大阪**，其他城市走 Faker 合成
+- 申请各 Key 的入口、免费额度、注意事项详见 [`.env.example`](./.env.example)
 
 ### PDF 渲染 (多引擎)
 
@@ -780,6 +798,19 @@ OPENAI_API_KEY=sk-...
 # ===== 工具数据源 =====
 USE_MOCK_TOOLS=true                        # 改为 false 走 Real Provider 路由
 
+# ===== Real Provider 密钥（USE_MOCK_TOOLS=false 时使用；缺哪个就只那个工具降级 Mock）=====
+# 国内天气 — https://console.qweather.com/  控制台 → 项目管理 → API Host
+QWEATHER_API_KEY=
+QWEATHER_API_HOST=                         # 必填，每人专属（形如 https://abcd1234ef.re.qweatherapi.com）
+# 海外天气 — https://openweathermap.org/api  注册后 Key 需 1-2h 激活
+OPENWEATHER_API_KEY=
+# 机票 + 酒店 — https://developers.amadeus.com/self-service  test env 免费 2000/月
+AMADEUS_API_KEY=
+AMADEUS_API_SECRET=
+# AMADEUS_BASE_URL=https://test.api.amadeus.com   # 默认 test；上生产改 api.amadeus.com
+# 国内 POI — https://lbs.amap.com/  应用管理 → 添加 Key（服务平台 = Web 服务）
+AMAP_API_KEY=
+
 # ===== 服务 =====
 HOST=0.0.0.0
 PORT=8000
@@ -870,9 +901,8 @@ VITE_WS_BASE=ws://localhost:8000
 ```text
 tests/smoke/smoke_test.py    plan + refine 各产出 trip_v1.md / trip_v2.md
 tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../refine
-                             + Monitor→WS 管道（验证 session_created / node_start×12 /
-                                node_end×12 / tool_start×5 / tool_end×5 /
-                                review_iteration / task_result）
+                             + Monitor→WS 管道（验证 session_created / node_start / node_end /
+                                tool_start / tool_end / review_iteration / task_result 至少各一条）
 ```
 
 ---
@@ -882,11 +912,13 @@ tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../ref
 1. **InMemorySaver** 在进程内按 `thread_id` 隔离 State；
    后端重启后历史会话失效（前端 localStorage 仍记录，但新指令会触发全新规划）。
    切换/刷新会话时不会丢消息——参见 [会话持久化与恢复](#会话持久化与恢复)。
-2. **MOCK_LLM** 对 4 类 prompt 都返回结构合规的桩 JSON，离线即可全图跑通。
+2. **MOCK_LLM** 对 7 类 prompt 都返回结构合规的桩 JSON，离线即可全图跑通。
 3. **Mock 工具**输出由输入哈希做种子，**完全确定性**，便于截图与冒烟。
-4. POI fixtures 自带 **东京 / 北京 / 大阪**；其他城市走 Faker 合成池。
-5. 单个 fetcher 失败仅写入 `state.errors`，**不阻塞整体行程生成**。
-6. PDF 引擎一个都不可用时，只输出 Markdown，前端 `FileCard` 仍可下载。
+4. **Real Provider 单工具降级**：缺某个 Key 时，仅该工具退回 Mock 并打 warning，其他工具按 `USE_MOCK_TOOLS` 路由继续走真实数据，主流程不受影响（参见 `tools/factory.py` 与 `.env.example`）。
+5. **报告 6 大模块**：`plan_itinerary` 与 3 个生成节点（`generate_packing_list` / `generate_cultural_tips` / `generate_pre_trip_checklist`）在 `cluster_pois` 之后并发，再汇入 `estimate_budget`，整图相对原版只多 1 个 LLM 调用的延迟代价。
+6. POI fixtures 自带 **东京 / 北京 / 大阪**；其他城市走 Faker 合成池。
+7. 单个 fetcher 失败仅写入 `state.errors`，**不阻塞整体行程生成**。
+8. PDF 引擎一个都不可用时，只输出 Markdown，前端 `FileCard` 仍可下载。
 
 ---
 
