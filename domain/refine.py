@@ -24,7 +24,13 @@ DIRTY_MAP: Dict[str, set[str]] = {
     "change_hotel": {"fetch_hotels", "plan_itinerary"},
     "change_flight": {"fetch_flights"},
     "change_pace": {"plan_itinerary"},
-    "change_theme": {"fetch_pois", "cluster_pois", "plan_itinerary"},
+    "change_theme": {
+        "fetch_pois",
+        "cluster_pois",
+        "plan_itinerary",
+        "generate_packing_list",
+        "generate_cultural_tips",
+    },
     "change_budget": {"fetch_hotels", "plan_itinerary"},
     "extend_days": {
         "fetch_weather",
@@ -33,6 +39,8 @@ DIRTY_MAP: Dict[str, set[str]] = {
         "fetch_pois",
         "cluster_pois",
         "plan_itinerary",
+        "generate_packing_list",
+        "generate_pre_trip_checklist",
     },
     "freeform": {"plan_itinerary"},
 }

@@ -13,11 +13,14 @@ from core.llm import build_llm
 from domain.refine import DIRTY_MAP
 
 
-# Four independent LLM instances, one per agent
+# Independent LLM instances, one per agent.
 _llm_parse_intent = build_llm()
 _llm_plan_itinerary = build_llm()
 _llm_review_plan = build_llm()
 _llm_parse_refine_intent = build_llm()
+_llm_pack_list = build_llm()
+_llm_cultural_tips = build_llm()
+_llm_pre_trip = build_llm()
 
 
 # ============================================================
@@ -38,12 +41,22 @@ async def parse_intent(state: Dict[str, Any]) -> Dict[str, Any]:
     constraints: Dict[str, Any] = {}
     if intent.get("budget_per_person"):
         constraints["budget_per_person"] = intent["budget_per_person"]
+    if intent.get("budget_level"):
+        constraints["budget_level"] = intent["budget_level"]
     if intent.get("pace"):
         constraints["pace"] = intent["pace"]
     if intent.get("with_kids"):
         constraints["with_kids"] = True
+    if intent.get("with_elder"):
+        constraints["with_elder"] = True
     if intent.get("avoid"):
         constraints["avoid"] = intent["avoid"]
+    if intent.get("must_visit"):
+        constraints["must_visit"] = intent["must_visit"]
+    if intent.get("interests"):
+        constraints["interests"] = intent["interests"]
+    if intent.get("diet"):
+        constraints["diet"] = intent["diet"]
 
     return {
         "parsed_intent": intent,
@@ -59,7 +72,9 @@ async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
         "plan_itinerary",
         days_num=state["days_num"],
         destination=state["destination"],
+        departure=state.get("departure") or "—",
         people_num=state["people_num"],
+        date_range=state.get("date_range") or [],
         travel_theme=state.get("travel_theme") or "通用",
         weather=state.get("weather") or [],
         pois_clustered=state.get("pois_clustered") or {},
@@ -79,6 +94,84 @@ async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
         "itinerary": itinerary,
         "tips": tips,
     }
+
+
+# ============================================================
+#  generate_packing_list
+# ============================================================
+async def generate_packing_list(state: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = prompts.render(
+        "pack_list",
+        destination=state["destination"],
+        date_range=state.get("date_range") or [],
+        weather=state.get("weather") or [],
+        travel_theme=state.get("travel_theme") or "通用",
+        constraints=state.get("constraints") or {},
+        days_num=state["days_num"],
+        people_num=state["people_num"],
+    )
+    try:
+        out = await _llm_pack_list.chat_json(prompt)
+    except Exception as e:
+        logger.warning(f"generate_packing_list LLM failed: {e}")
+        out = {}
+    if not isinstance(out, dict):
+        out = {}
+    # Normalise: every category is a list, even when LLM returns a string by mistake.
+    keys = ("essentials", "clothing", "toiletries", "electronics", "health", "activities", "misc")
+    return {"packing_list": {k: list(out.get(k) or []) for k in keys}}
+
+
+# ============================================================
+#  generate_cultural_tips
+# ============================================================
+async def generate_cultural_tips(state: Dict[str, Any]) -> Dict[str, Any]:
+    constraints = state.get("constraints") or {}
+    prompt = prompts.render(
+        "cultural_tips",
+        destination=state["destination"],
+        travel_theme=state.get("travel_theme") or "通用",
+        with_kids=constraints.get("with_kids", False),
+        constraints=constraints,
+    )
+    try:
+        out = await _llm_cultural_tips.chat_json(prompt)
+    except Exception as e:
+        logger.warning(f"generate_cultural_tips LLM failed: {e}")
+        out = {}
+    if not isinstance(out, dict):
+        out = {}
+    out.setdefault("dos", [])
+    out.setdefault("donts", [])
+    out.setdefault("dining", {})
+    out.setdefault("religious_sites", [])
+    out.setdefault("safety", {})
+    out.setdefault("useful_phrases", [])
+    return {"cultural_tips": out}
+
+
+# ============================================================
+#  generate_pre_trip_checklist
+# ============================================================
+async def generate_pre_trip_checklist(state: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = prompts.render(
+        "pre_trip_checklist",
+        destination=state["destination"],
+        start_date=state.get("start_date") or "",
+        days_num=state["days_num"],
+        people_num=state["people_num"],
+        travel_theme=state.get("travel_theme") or "通用",
+        constraints=state.get("constraints") or {},
+    )
+    try:
+        out = await _llm_pre_trip.chat_json(prompt)
+    except Exception as e:
+        logger.warning(f"generate_pre_trip_checklist LLM failed: {e}")
+        out = {}
+    checklist = (out or {}).get("checklist") or []
+    if not isinstance(checklist, list):
+        checklist = []
+    return {"pre_trip_checklist": checklist}
 
 
 # ============================================================

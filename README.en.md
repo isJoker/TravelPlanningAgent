@@ -59,9 +59,9 @@ streaming **graph nodes / tool calls / chain-of-thought** over WebSocket in real
 | # | Feature | Description |
 |---|---------|-------------|
 | F-01 | Multi-source aggregation | Parallel fan-out to weather / flight / hotel / POI tools |
-| F-02 | Smart itinerary planning | Cluster POIs by area + LLM lays out 4 daily slots (morning/noon/afternoon/evening) |
-| F-03 | Theme-aware planning | family / honeymoon / food / outdoor / culture themes shape POI picks and pacing |
-| F-04 | Report output | Markdown is always produced; PDF auto-selects Word COM / pandoc+xelatex / WeasyPrint |
+| F-02 | Smart itinerary planning | Cluster POIs by area + pace mapping; each day carries meals / transport hint / daily-cost estimate / advance-booking reminders |
+| F-03 | Theme-aware planning | family / honeymoon / food / outdoor / culture themes shape POI picks, pacing, restaurant density, and packing list |
+| F-04 | 6-section report | Markdown is always produced (PDF auto-selects Word COM / pandoc+xelatex / WeasyPrint); includes daily itinerary / recommended flights & hotels / tier-aware budget (budget·mid-range·luxury) / **packing checklist** / **culture & safety** / **pre-trip preparation timeline** |
 | F-05 | Self-review loop | A failed `review_plan` returns to `plan_itinerary` (max 2 retries) |
 | F-06 | Graceful degradation | Single tool failure only appends to `errors`, never blocks the run |
 | F-07 | Multi-turn refinement | `refine_graph` recomputes only `dirty_nodes`, then `version+1` |
@@ -69,7 +69,7 @@ streaming **graph nodes / tool calls / chain-of-thought** over WebSocket in real
 | F-09 | Web frontend | Vue 3 Kiro-style: welcome page → chat stream + thought process + files drawer |
 | F-10 | Realtime push | Node / tool / review iteration / task result events streamed via WebSocket |
 | F-11 | Multi-user isolation | `ContextVar` isolates `session_dir` / `thread_id` per coroutine |
-| F-12 | Mock-to-Real | One env-var flip (`USE_MOCK_TOOLS` / `MOCK_LLM`) swaps providers |
+| F-12 | Mock-to-Real | `MOCK_LLM=false` enables GPT-4o; `USE_MOCK_TOOLS=false` routes to QWeather / OpenWeatherMap / Amadeus / Amap real providers, **falling back to mock per-tool when a key is missing** so the rest of the stack still runs |
 
 ---
 
@@ -91,7 +91,7 @@ flowchart TB
     end
 
     subgraph AG["🧠 LangGraph orchestration · agent/"]
-        PG["plan_graph (12 nodes)"]
+        PG["plan_graph (15 nodes)"]
         RG["refine_graph"]
         Saver[("InMemorySaver · shared")]
         Subs["LLM sub-agents · parse_intent / plan_itinerary / review_plan / parse_refine"]
@@ -186,15 +186,15 @@ TravelPlanningAgent/
 ├── agent/                       🧠 LangGraph orchestration (pure domain)
 │   ├── plan_agent.py              First-time planning entry (binds ContextVar, invokes graph)
 │   ├── refine_agent.py            Multi-turn refinement entry
-│   ├── plan_graph.py              build_plan_graph() — 12-node state machine
+│   ├── plan_graph.py              build_plan_graph() — 15-node state machine
 │   ├── refine_graph.py            build_refine_graph() — reuses plan nodes + dispatcher
-│   ├── nodes.py                   12 plan-graph nodes
+│   ├── nodes.py                   plan-graph nodes (fetch / plan / 3 generators / review / render)
 │   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher_router
 │   ├── _timed.py                  Shared @timed decorator (DRY across plan + refine nodes)
-│   ├── agents.py                  4 LLM sub-agents (independent LLM instances)
+│   ├── agents.py                  7 LLM sub-agents (independent LLM instances)
 │   ├── state.py                   TripState (TypedDict + Annotated reducers)
 │   └── prompts/
-│       └── prompts.yaml           4 centralised prompt templates (loaded by core.prompts)
+│       └── prompts.yaml           7 prompt templates (4 plan + 3 skill-style: pack_list / cultural_tips / pre_trip_checklist)
 │
 ├── domain/                      📦 Pure data models / routing constants
 │   └── refine.py                  RefineIntent + DIRTY_MAP (refine type → dirty node set)
@@ -205,6 +205,7 @@ TravelPlanningAgent/
 │   ├── cache.py                   TTLCache (key = tool+provider+sha1(kwargs))
 │   └── providers/                 Provider adapters (Mock + Real are siblings)
 │       ├── base.py                  BaseProvider abstraction
+│       ├── real/                    QWeather / OpenWeatherMap / Amadeus(flight+hotel) / Amap
 │       └── mocks/                   mock_weather / mock_flight / mock_hotel / mock_poi
 │           └── fixtures/poi/        Tokyo / Beijing / Osaka offline POI data
 │
@@ -300,7 +301,13 @@ flowchart TD
     FH --> CP
     FP --> CP
     CP --> PL[plan_itinerary]
+    CP --> GPL[generate_packing_list]
+    CP --> GCT[generate_cultural_tips]
+    CP --> GPT[generate_pre_trip_checklist]
     PL --> EB[estimate_budget]
+    GPL --> EB
+    GCT --> EB
+    GPT --> EB
     EB --> RP{"review_plan · LLM self-review"}
     RP -->|"failed & retry &lt; 2"| PL
     RP -->|"passed"| RD["render_pdf · MD (always) + PDF (best-effort)"]
@@ -310,7 +317,7 @@ flowchart TD
     classDef parallel fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
     classDef llm fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
     class FW,FF,FH,FP parallel
-    class PI,PL,RP llm
+    class PI,PL,RP,GPL,GCT,GPT llm
 ```
 
 **Key implementation points**
@@ -358,9 +365,9 @@ The `refine_intent.type` → `dirty_nodes` mapping lives in `domain/refine.py::D
 | `swap_poi` / `rework_day` / `change_pace` / `freeform` | `{plan_itinerary}` |
 | `change_hotel` | `{fetch_hotels, plan_itinerary}` |
 | `change_flight` | `{fetch_flights}` |
-| `change_theme` | `{fetch_pois, cluster_pois, plan_itinerary}` |
+| `change_theme` | `{fetch_pois, cluster_pois, plan_itinerary, generate_packing_list, generate_cultural_tips}` |
 | `change_budget` | `{fetch_hotels, plan_itinerary}` |
-| `extend_days` | all fetchers + cluster + plan |
+| `extend_days` | all fetchers + cluster + plan + `generate_packing_list` + `generate_pre_trip_checklist` |
 
 > All refine types still recompute `estimate_budget` → `review_plan_lite` → `render_pdf` → `finalize` to keep the artefact self-consistent.
 
@@ -371,9 +378,11 @@ The `refine_intent.type` → `dirty_nodes` mapping lives in `domain/refine.py::D
 ```python
 class TripState(TypedDict, total=False):
     # input:        destination / days_num / people_num / travel_theme / ...
-    # parsed:       parsed_intent / date_range / constraints
+    # parsed:       parsed_intent / date_range / constraints (incl. budget_level / interests)
     # gathered:     weather / flights / hotels / pois / pois_clustered
-    # plan:         itinerary / budget / tips / summary
+    # plan:         itinerary (with meals/transport/daily_cost_cny/booking_notes)
+    # plan extras:  packing_list / cultural_tips / pre_trip_checklist
+    # budget:       budget (tier-aware) / daily_costs[] / tips / summary
     # review:       review_passed / review_feedback / retry_count
     # multi-turn:   version / refine_request / refine_intent
     history:     Annotated[List[Dict], operator.add]   # append
@@ -441,7 +450,7 @@ sequenceDiagram
 
 | Class | Trigger | Behaviour |
 |-------|---------|-----------|
-| `MockLLM` | `MOCK_LLM=true` (default) or no `OPENAI_API_KEY` | Returns **structurally valid stub JSON** keyed off prompt markers (one shape per prompt kind) |
+| `MockLLM` | `MOCK_LLM=true` (default) or no `OPENAI_API_KEY` | Returns **structurally valid stub JSON** keyed off prompt markers (one shape per prompt kind, 7 in total) |
 | `RealLLM` | `MOCK_LLM=false` with a key | LangChain 1.0 `init_chat_model("gpt-4o", model_provider="openai", ...)` |
 
 `agent/agents.py` instantiates an independent LLM per sub-agent so they can be swapped to different models later:
@@ -450,6 +459,9 @@ sequenceDiagram
 |-----------|-------------|----------------|
 | `parse_intent` | `parse_intent` | `bot_user_input` → `{parsed_intent, constraints}` |
 | `plan_itinerary` | `plan_itinerary` | weather/pois_clustered/constraints → `{itinerary, tips}` |
+| `generate_packing_list` | `generate_packing_list` | weather/days/theme → 7-category checklist |
+| `generate_cultural_tips` | `generate_cultural_tips` | destination/theme → dos/donts/dining/safety/phrases |
+| `generate_pre_trip_checklist` | `generate_pre_trip_checklist` | destination/start_date/days → 5-bucket reverse timeline |
 | `review_plan` | `review_plan` | itinerary/weather/budget → `{passed, issues, suggestions}` |
 | `parse_refine_intent` | `parse_refine_intent` | refine_request + summary → `RefineIntent + dirty_nodes` |
 
@@ -470,9 +482,15 @@ flowchart LR
     F --> G([result])
 ```
 
-- `tools/factory.py` picks the provider based on `USE_MOCK_TOOLS`; future expansion is a routing table edit
+- `tools/factory.py` routes by `USE_MOCK_TOOLS` + destination locale + per-tool key presence:
+  - China weather → QWeather; overseas → OpenWeatherMap
+  - Flights / hotels → Amadeus (test env: 2000 free calls/month)
+  - China POI → Amap; overseas falls back to mock
+- **Per-tool degradation**: when a provider's key is missing, **only that tool reverts to mock** (a single warning), the rest of the stack still runs against real data
+- Real-provider exceptions also flow through `BaseProvider.fallback`, auto-reverting to the matching mock
 - Mock providers seed RNG with `hashlib.sha1(seed)` so **the same input always yields the same output** (great for screenshots and tests)
 - POI fixtures ship for **Tokyo / Beijing / Osaka**; other cities fall through to a Faker-synthesised pool
+- Sign-up links, free-tier quotas and gotchas for each key are documented in [`.env.example`](./.env.example)
 
 ### PDF Renderer (Multi-engine)
 
@@ -791,6 +809,19 @@ OPENAI_API_KEY=sk-...
 # ===== Tool data sources =====
 USE_MOCK_TOOLS=true                        # set false to route to real providers
 
+# ===== Real provider keys (used when USE_MOCK_TOOLS=false; missing keys make ONLY that tool fall back to mock) =====
+# Domestic weather — https://console.qweather.com/  Console → Projects → API Host
+QWEATHER_API_KEY=
+QWEATHER_API_HOST=                         # required, per-developer (e.g. https://abcd1234ef.re.qweatherapi.com)
+# Overseas weather — https://openweathermap.org/api  newly issued keys need 1-2h to activate
+OPENWEATHER_API_KEY=
+# Flights + hotels — https://developers.amadeus.com/self-service  test env: 2000 free calls/month
+AMADEUS_API_KEY=
+AMADEUS_API_SECRET=
+# AMADEUS_BASE_URL=https://test.api.amadeus.com   # default test; switch to api.amadeus.com for prod
+# Domestic POI — https://lbs.amap.com/  Console → My apps → Add key (Web service)
+AMAP_API_KEY=
+
 # ===== Service =====
 HOST=0.0.0.0
 PORT=8000
@@ -881,9 +912,9 @@ Both scripts must stay green after backend changes (aligned with `pyproject.toml
 ```text
 tests/smoke/smoke_test.py    plan + refine produce trip_v1.md / trip_v2.md
 tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../refine
-                             + Monitor→WS pipeline (asserts session_created, node_start×12,
-                                node_end×12, tool_start×5, tool_end×5,
-                                review_iteration, task_result)
+                             + Monitor→WS pipeline (asserts session_created / node_start /
+                                node_end / tool_start / tool_end / review_iteration /
+                                task_result each fire at least once)
 ```
 
 ---
@@ -893,11 +924,13 @@ tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../ref
 1. **InMemorySaver** isolates state by `thread_id` for the lifetime of the process.
    On restart, in-flight conversations expire (the frontend localStorage still lists them, but a new instruction starts a fresh plan).
    Thread switches and full reloads keep their messages — see [Session Persistence & Recovery](#session-persistence--recovery).
-2. **MOCK_LLM** returns structurally valid stub JSON for all 4 prompt kinds, so the graph runs to completion fully offline.
+2. **MOCK_LLM** returns structurally valid stub JSON for all 7 prompt kinds, so the graph runs to completion fully offline.
 3. **Mock tools** seed their RNG from the input hash → **fully deterministic** output, ideal for screenshots and tests.
-4. POI fixtures ship for **Tokyo / Beijing / Osaka**; other cities fall through to a Faker-synthesised pool.
-5. A single fetcher failure only writes to `state.errors` and **does not block** the rest of the run.
-6. When no PDF engine is available, only Markdown is produced — the frontend `FileCard` can still download it.
+4. **Per-tool real-provider degradation**: when a key is missing, only that tool falls back to mock with a single warning; the rest of the stack still runs against real data (see `tools/factory.py` and `.env.example`).
+5. **6-section report**: `plan_itinerary` plus the three new generators (`generate_packing_list` / `generate_cultural_tips` / `generate_pre_trip_checklist`) run in parallel after `cluster_pois` and merge at `estimate_budget`, costing only one extra LLM round-trip end-to-end versus the previous version.
+6. POI fixtures ship for **Tokyo / Beijing / Osaka**; other cities fall through to a Faker-synthesised pool.
+7. A single fetcher failure only writes to `state.errors` and **does not block** the rest of the run.
+8. When no PDF engine is available, only Markdown is produced — the frontend `FileCard` can still download it.
 
 ---
 

@@ -199,14 +199,22 @@ async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
     # Fallback: synthesise from pois_clustered if LLM returned empty.
     if not itinerary:
         itinerary = _fallback_itinerary(state)
-        tips = ["保持手机充电", "预留缓冲时间", "贵重物品随身"]
+        tips = [
+            "热门景点提前 1-2 周线上购票",
+            "随身少量现金应对小摊不收移动支付的情况",
+            "出门前用酒店地址截图给司机看，避免发音歧义",
+        ]
 
-    # Backfill date strings from date_range when LLM returns placeholders.
+    # Backfill date strings + day_index when LLM returns placeholders.
     date_range = state.get("date_range") or []
     for i, d in enumerate(itinerary):
         if i < len(date_range):
             d.setdefault("date", date_range[i])
         d.setdefault("day_index", i + 1)
+        d.setdefault("meals", {})
+        d.setdefault("transport_hint", "")
+        d.setdefault("daily_cost_cny", 0)
+        d.setdefault("booking_notes", [])
 
     summary = (
         f"为 {state['people_num']} 人规划了 {state['destination']} {state['days_num']} 天行程"
@@ -219,15 +227,52 @@ async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ============================================================
+#  generate_packing_list
+# ============================================================
+@_timed("generate_packing_list")
+async def generate_packing_list(state: Dict[str, Any]) -> Dict[str, Any]:
+    result = await agents.generate_packing_list(state)
+    pl = result.get("packing_list") or {}
+    total = sum(len(v) for v in pl.values() if isinstance(v, list))
+    return {"packing_list": pl, "_summary": f"打包清单 {total} 项"}
+
+
+# ============================================================
+#  generate_cultural_tips
+# ============================================================
+@_timed("generate_cultural_tips")
+async def generate_cultural_tips(state: Dict[str, Any]) -> Dict[str, Any]:
+    result = await agents.generate_cultural_tips(state)
+    ct = result.get("cultural_tips") or {}
+    n_dos = len(ct.get("dos") or [])
+    n_donts = len(ct.get("donts") or [])
+    return {"cultural_tips": ct, "_summary": f"do×{n_dos} / don't×{n_donts}"}
+
+
+# ============================================================
+#  generate_pre_trip_checklist
+# ============================================================
+@_timed("generate_pre_trip_checklist")
+async def generate_pre_trip_checklist(state: Dict[str, Any]) -> Dict[str, Any]:
+    result = await agents.generate_pre_trip_checklist(state)
+    cl = result.get("pre_trip_checklist") or []
+    return {"pre_trip_checklist": cl, "_summary": f"出行前 timeline {len(cl)} 段"}
+
+
 def _fallback_itinerary(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     days = int(state["days_num"])
     clustered = state.get("pois_clustered") or {}
     weather = state.get("weather") or []
+    constraints = state.get("constraints") or {}
+    level = constraints.get("budget_level") or "mid-range"
+    base_cost = {"budget": 280, "mid-range": 480, "luxury": 900}.get(level, 480)
     out: List[Dict[str, Any]] = []
     for i in range(days):
         bucket = clustered.get(f"day_{i + 1}", [])
         slots: List[Dict[str, Any]] = []
         slot_names = ["上午", "中午", "下午", "晚上"]
+        day_pois: List[str] = []
         for idx, slot_name in enumerate(slot_names):
             if idx < len(bucket):
                 p = bucket[idx]
@@ -237,15 +282,27 @@ def _fallback_itinerary(state: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "type": p.get("type", "景点"),
                     "note": None,
                 })
+                day_pois.append(p["name"])
             else:
                 slots.append({"slot": slot_name, "poi": "自由活动", "type": "自由", "note": None})
+                day_pois.append("自由活动")
+        # Use the first POI-area as area; fall back to "—".
+        area = bucket[0].get("area") if bucket else "—"
         out.append(
             {
                 "day_index": i + 1,
                 "date": (state.get("date_range") or ["—"] * days)[i],
                 "weather_summary": (weather[i].get("condition") if i < len(weather) else None),
-                "area": (bucket[0].get("area") if bucket else "—"),
+                "area": area,
                 "slots": slots,
+                "meals": {
+                    "breakfast": "酒店自助早餐",
+                    "lunch": day_pois[1],
+                    "dinner": day_pois[3],
+                },
+                "transport_hint": "市内地铁 / 步行；机场建议出租车",
+                "daily_cost_cny": base_cost,
+                "booking_notes": [],
             }
         )
     return out
@@ -261,6 +318,9 @@ async def estimate_budget(state: Dict[str, Any]) -> Dict[str, Any]:
     days = int(state["days_num"])
     pax = int(state["people_num"])
     pois = state.get("pois") or []
+    constraints = state.get("constraints") or {}
+    level = constraints.get("budget_level") or "mid-range"
+    itinerary = state.get("itinerary") or []
 
     flight_cost = 0.0
     if flights:
@@ -270,19 +330,53 @@ async def estimate_budget(state: Dict[str, Any]) -> Dict[str, Any]:
 
     hotel_cost = 0.0
     if hotels:
-        # Take median-priced hotel as representative.
-        avg = sorted(h.get("price_per_night", 0) for h in hotels[:5])
-        if avg:
-            hotel_cost = avg[len(avg) // 2] * max(1, days - 1)
+        # Tier-aware hotel pick: budget=cheapest 25%, mid-range=median, luxury=top quartile.
+        prices = sorted(h.get("price_per_night", 0) for h in hotels[:10] if h.get("price_per_night"))
+        if prices:
+            tier_idx = {
+                "budget": max(0, len(prices) // 4 - 1),
+                "mid-range": len(prices) // 2,
+                "luxury": min(len(prices) - 1, (len(prices) * 3) // 4),
+            }.get(level, len(prices) // 2)
+            hotel_cost = prices[tier_idx] * max(1, days - 1)
 
-    poi_cost = sum(p.get("ticket_price", 0) for p in pois[:days * 2]) * pax * 0.5
-    meals = days * pax * 180
-    transport = days * pax * 80
+    # POI tickets: take *real* tickets from the chosen itinerary if we can; otherwise
+    # fall back to a coarse estimate from the candidate pool.
+    poi_cost = 0.0
+    chosen_names = {
+        slot["poi"]
+        for d in itinerary
+        for slot in (d.get("slots") or [])
+        if slot.get("poi")
+    }
+    if chosen_names and pois:
+        ticket_by_name = {p["name"]: float(p.get("ticket_price", 0)) for p in pois}
+        poi_cost = sum(ticket_by_name.get(n, 0) for n in chosen_names) * pax
+    else:
+        poi_cost = sum(p.get("ticket_price", 0) for p in pois[:days * 2]) * pax * 0.5
+
+    # Per-tier daily food + local transport (exclusive of POI tickets, billed above).
+    food_per_pax_day = {"budget": 120, "mid-range": 250, "luxury": 500}.get(level, 250)
+    transport_per_pax_day = {"budget": 50, "mid-range": 80, "luxury": 150}.get(level, 80)
+    meals = days * pax * food_per_pax_day
+    transport = days * pax * transport_per_pax_day
 
     total = round(flight_cost + hotel_cost + poi_cost + meals + transport, 0)
     per_person = round(total / max(1, pax), 0)
+
+    # daily_costs: prefer LLM-supplied daily_cost_cny, else allocate evenly.
+    daily_costs: List[float] = []
+    on_ground = poi_cost + meals + transport  # excludes flights & hotels
+    for d in itinerary:
+        v = d.get("daily_cost_cny")
+        if isinstance(v, (int, float)) and v > 0:
+            daily_costs.append(float(v))
+    if not daily_costs:
+        daily_costs = [round(on_ground / days, 0)] * days
+
     budget = {
         "currency": "CNY",
+        "level": level,
         "flights": round(flight_cost, 0),
         "hotels": round(hotel_cost, 0),
         "pois": round(poi_cost, 0),
@@ -290,8 +384,13 @@ async def estimate_budget(state: Dict[str, Any]) -> Dict[str, Any]:
         "transport": round(transport, 0),
         "total": total,
         "per_person": per_person,
+        "daily_avg": round(total / max(1, days), 0),
     }
-    return {"budget": budget, "_summary": f"总预算 {total} CNY (人均 {per_person})"}
+    return {
+        "budget": budget,
+        "daily_costs": daily_costs,
+        "_summary": f"总预算 {total} CNY (人均 {per_person} · {level})",
+    }
 
 
 # ============================================================
@@ -341,6 +440,10 @@ async def render_pdf(state: Dict[str, Any]) -> Dict[str, Any]:
             "errors": state.get("errors") or [],
             "budget": state.get("budget") or {"currency": "CNY", "total": 0, "per_person": 0,
                                               "flights": 0, "hotels": 0, "pois": 0, "meals": 0, "transport": 0},
+            "daily_costs": state.get("daily_costs") or [],
+            "packing_list": state.get("packing_list") or {},
+            "cultural_tips": state.get("cultural_tips") or {},
+            "pre_trip_checklist": state.get("pre_trip_checklist") or [],
             "title": f"{state['destination']} {state['days_num']}天行程",
         },
         output_dir=out_dir,
