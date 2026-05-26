@@ -8,9 +8,11 @@ Flow:
   3. Map fxDate / tempMax / tempMin / textDay / pop → our schema
 
 Endpoint host:
-  - Free dev plan        → https://devapi.qweather.com
-  - Standard / Pro plans → https://api.qweather.com (or your custom Pro host)
-Override via QWEATHER_API_HOST.
+  Since late-2024 QWeather has assigned every developer a **dedicated**
+  API host (e.g. ``abcd1234ef.re.qweatherapi.com``). The legacy shared
+  host ``devapi.qweather.com`` returns 403 for new accounts. Set
+  ``QWEATHER_API_HOST`` to the value shown on your project's console
+  page (https://console.qweather.com/).
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from core.logger import logger
 from tools.providers.base import BaseProvider
 from tools.providers.mocks.mock_weather import MockWeatherProvider
 
-_DEFAULT_HOST = "https://devapi.qweather.com"
+_LEGACY_SHARED_HOST = "https://devapi.qweather.com"
 _TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
 _CONDITION_MAP = {
@@ -48,10 +50,18 @@ class QWeatherProvider(BaseProvider):
 
     def __init__(self) -> None:
         self.api_key = os.getenv("QWEATHER_API_KEY", "").strip()
-        self.host = os.getenv("QWEATHER_API_HOST", _DEFAULT_HOST).rstrip("/")
+        self.host = (os.getenv("QWEATHER_API_HOST", "") or _LEGACY_SHARED_HOST).rstrip("/")
         self.fallback = MockWeatherProvider()
         if not self.api_key:
             logger.warning("QWEATHER_API_KEY not set; QWeatherProvider will fail and fall back")
+        if self.host == _LEGACY_SHARED_HOST:
+            logger.warning(
+                "QWEATHER_API_HOST not set; falling back to legacy shared host "
+                f"{_LEGACY_SHARED_HOST}, which returns 403 for accounts created after "
+                "late-2024. Copy your project's dedicated 'API Host' from "
+                "https://console.qweather.com/ (looks like xxx.re.qweatherapi.com) "
+                "and set QWEATHER_API_HOST."
+            )
 
     async def fetch(self, *, city: str, date_range: List[str], **_: Any) -> List[dict]:
         if not self.api_key:
@@ -91,7 +101,7 @@ class QWeatherProvider(BaseProvider):
         # /geo/v2/city/lookup is the v2 GeoAPI; falls back to v1 with same shape.
         url = f"{self.host}/geo/v2/city/lookup"
         r = await http.get(url, params={"location": city, "key": self.api_key, "number": 1})
-        r.raise_for_status()
+        self._raise_for_status(r, "city lookup")
         body = r.json()
         if body.get("code") != "200" or not body.get("location"):
             raise RuntimeError(f"QWeather city lookup failed: code={body.get('code')} city={city}")
@@ -100,11 +110,22 @@ class QWeatherProvider(BaseProvider):
     async def _fetch_7d(self, http: httpx.AsyncClient, location_id: str) -> dict:
         url = f"{self.host}/v7/weather/7d"
         r = await http.get(url, params={"location": location_id, "key": self.api_key})
-        r.raise_for_status()
+        self._raise_for_status(r, "7d forecast")
         body = r.json()
         if body.get("code") != "200":
             raise RuntimeError(f"QWeather 7d failed: code={body.get('code')}")
         return body
+
+    def _raise_for_status(self, r: httpx.Response, op: str) -> None:
+        """Surface 403 as a clear setup-error rather than a generic HTTPStatusError."""
+        if r.status_code == 403:
+            raise RuntimeError(
+                f"QWeather {op} returned 403 from host={self.host!r}. "
+                "If this is the shared 'devapi.qweather.com', set QWEATHER_API_HOST "
+                "to your project's dedicated host (https://console.qweather.com/ → "
+                "项目管理 → API Host)."
+            )
+        r.raise_for_status()
 
 
 def _pop_to_prob(pop: Any, text: str) -> float:
