@@ -6,7 +6,6 @@ sandboxed environments where running uvicorn as a child process is unreliable.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path

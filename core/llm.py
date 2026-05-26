@@ -91,9 +91,21 @@ class MockLLM:
 
     @staticmethod
     def _mock_refine_intent(prompt: str) -> Dict[str, Any]:
-        text = prompt
-        # Crude intent classification suitable for demo.
-        if any(k in text for k in ["第", "Day", "day"]):
+        # Only inspect the user-supplied refine instruction, not the whole
+        # prompt template — otherwise keyword sniffing collides with the
+        # type-name list ("rework_day", "extend_days", "change_pace", ...)
+        # baked into the YAML and every refine resolves to ``rework_day``.
+        # The YAML uses 【用户调整指令】xxx (no colon); accept both styles.
+        m = (
+            re.search(r"【\s*用户调整指令\s*】\s*(.+?)(?:\n|$)", prompt)
+            or re.search(r"用户调整指令\s*[:：]\s*(.+?)(?:\n|$)", prompt)
+            or re.search(r"refine_request[\"']?\s*[:=]\s*[\"']?([^\n\"']+)", prompt)
+        )
+        text = (m.group(1) if m else "").strip()
+        if not text:
+            return {"type": "freeform", "targets": [], "payload": {"free_text": prompt[:200]}}
+
+        if any(k in text for k in ["第", "Day", "day"]) and "天数" not in text:
             day_match = re.search(r"第\s*(\d+)\s*天", text)
             day_idx = int(day_match.group(1)) if day_match else 1
             return {"type": "rework_day", "targets": [f"day_{day_idx}"], "payload": {}}

@@ -12,6 +12,7 @@ from core.context import (
 from core.logger import logger
 from core.monitor import monitor
 from agent.refine_graph import build_refine_graph
+from agent.refine_nodes import RefineStateMissingError
 
 PROJECT_ROOT = Path(__file__).parents[1].resolve()
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -41,6 +42,9 @@ async def run_refine_agent(instruction: str, thread_id: str, *, trip_id: str | N
         logger.info(f"[refine] start thread_id={thread_id} trip_id={trip_id}")
         await graph.ainvoke(patch, config=config)
         logger.info(f"[refine] done thread_id={thread_id}")
+    except RefineStateMissingError as e:
+        # The user-facing event is already published from the node; just log here.
+        logger.warning(f"[refine] state missing thread_id={thread_id}: {e}")
     except Exception as e:
         logger.exception(f"[refine] failed thread_id={thread_id}: {e}")
         monitor.report_error("refine_graph", str(e))

@@ -1,7 +1,9 @@
 """LLM agents: parse_intent, plan_itinerary, review_plan, parse_refine_intent.
 
-These four agents are called by LangGraph nodes to interact with the LLM.
-Each agent has its own LLM instance.
+Each agent calls the LLM through the process-wide singleton returned by
+``build_llm()``. Splitting them into separate variables would be misleading
+(``build_llm`` caches a single instance), so we use one shared handle here
+and let prompt rendering be the differentiator.
 """
 from __future__ import annotations
 
@@ -13,14 +15,8 @@ from core.llm import build_llm
 from domain.refine import DIRTY_MAP
 
 
-# Independent LLM instances, one per agent.
-_llm_parse_intent = build_llm()
-_llm_plan_itinerary = build_llm()
-_llm_review_plan = build_llm()
-_llm_parse_refine_intent = build_llm()
-_llm_pack_list = build_llm()
-_llm_cultural_tips = build_llm()
-_llm_pre_trip = build_llm()
+# Single shared LLM handle (build_llm caches a singleton).
+_llm = build_llm()
 
 
 # ============================================================
@@ -33,7 +29,7 @@ async def parse_intent(state: Dict[str, Any]) -> Dict[str, Any]:
 
     prompt = prompts.render("parse_intent", bot_user_input=bot_input)
     try:
-        intent = await _llm_parse_intent.chat_json(prompt)
+        intent = await _llm.chat_json(prompt)
     except Exception as e:
         logger.warning(f"parse_intent LLM failed: {e}")
         intent = {}
@@ -82,7 +78,7 @@ async def plan_itinerary(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     try:
-        out = await _llm_plan_itinerary.chat_json(prompt)
+        out = await _llm.chat_json(prompt)
         itinerary = out.get("itinerary") or []
         tips = out.get("tips") or []
     except Exception as e:
@@ -111,7 +107,7 @@ async def generate_packing_list(state: Dict[str, Any]) -> Dict[str, Any]:
         people_num=state["people_num"],
     )
     try:
-        out = await _llm_pack_list.chat_json(prompt)
+        out = await _llm.chat_json(prompt)
     except Exception as e:
         logger.warning(f"generate_packing_list LLM failed: {e}")
         out = {}
@@ -135,7 +131,7 @@ async def generate_cultural_tips(state: Dict[str, Any]) -> Dict[str, Any]:
         constraints=constraints,
     )
     try:
-        out = await _llm_cultural_tips.chat_json(prompt)
+        out = await _llm.chat_json(prompt)
     except Exception as e:
         logger.warning(f"generate_cultural_tips LLM failed: {e}")
         out = {}
@@ -164,7 +160,7 @@ async def generate_pre_trip_checklist(state: Dict[str, Any]) -> Dict[str, Any]:
         constraints=state.get("constraints") or {},
     )
     try:
-        out = await _llm_pre_trip.chat_json(prompt)
+        out = await _llm.chat_json(prompt)
     except Exception as e:
         logger.warning(f"generate_pre_trip_checklist LLM failed: {e}")
         out = {}
@@ -186,7 +182,7 @@ async def review_plan(state: Dict[str, Any]) -> Dict[str, Any]:
         budget=state.get("budget") or {},
     )
     try:
-        out = await _llm_review_plan.chat_json(prompt)
+        out = await _llm.chat_json(prompt)
     except Exception as e:
         logger.warning(f"review_plan LLM failed: {e}")
         out = {"passed": True, "issues": [], "suggestions": []}
@@ -218,7 +214,7 @@ async def parse_refine_intent(state: Dict[str, Any]) -> Dict[str, Any]:
         refine_request=request,
     )
     try:
-        intent = await _llm_parse_refine_intent.chat_json(prompt)
+        intent = await _llm.chat_json(prompt)
         if not isinstance(intent, dict) or not intent.get("type"):
             intent = {"type": "freeform", "targets": [], "payload": {"free_text": request}}
     except Exception as e:

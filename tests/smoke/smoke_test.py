@@ -9,7 +9,6 @@ producing a Markdown report on disk.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -68,6 +67,28 @@ async def main() -> int:
     print(f"[smoke] new files: {new_files}")
     if not any(f.endswith(".md") and "v2" in f for f in new_files):
         print("[smoke] ❌ refine did not produce v2 markdown")
+        return 1
+
+    # ---- Verify dirty_nodes does NOT accumulate across refines (regression) ----
+    from core.checkpointer import get_checkpointer
+
+    saver = get_checkpointer()
+    cfg = {"configurable": {"thread_id": payload["conversation_name"]}}
+
+    # First refine targets hotel; second targets flight. With the old reducer
+    # the second snapshot would contain {fetch_hotels, fetch_flights}; with
+    # the replace-style reducer only the most-recent intent's dirty set
+    # should be present.
+    await run_refine_agent("换一个酒店", thread_id=payload["conversation_name"], trip_id="trp_h")
+    snap = await saver.aget_tuple(cfg)
+    dirty1 = (snap.checkpoint or {}).get("channel_values", {}).get("dirty_nodes") or set()
+    await run_refine_agent("换一个航班", thread_id=payload["conversation_name"], trip_id="trp_f")
+    snap = await saver.aget_tuple(cfg)
+    dirty2 = (snap.checkpoint or {}).get("channel_values", {}).get("dirty_nodes") or set()
+    print(f"[smoke] dirty after refine#hotel: {dirty1}")
+    print(f"[smoke] dirty after refine#flight: {dirty2}")
+    if "fetch_hotels" in dirty2 and "fetch_flights" in dirty2:
+        print("[smoke] ❌ dirty_nodes accumulated across refines")
         return 1
 
     print("\n[smoke] ✅ pass")
