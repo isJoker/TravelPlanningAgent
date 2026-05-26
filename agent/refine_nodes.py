@@ -79,22 +79,21 @@ async def parse_refine_intent(state: Dict[str, Any]) -> Dict[str, Any]:
 #  dispatcher_router  (LangGraph conditional-edge function)
 # ============================================================
 def dispatcher_router(state: Dict[str, Any]) -> List[str]:
-    """Decide which fetch nodes to re-run based on ``dirty_nodes``.
+    """Decide which fetch / generator nodes to re-run based on ``dirty_nodes``.
 
     Returning a list of node names lets LangGraph fan out to all of them in
-    parallel. If nothing needs to be re-fetched we jump straight to
-    ``plan_itinerary``.
+    parallel. If nothing in the dirty set is a fetch or a generator, we fall
+    back to ``plan_itinerary`` (LangGraph will then converge to estimate_budget
+    via the existing edges).
     """
     dirty = state.get("dirty_nodes") or set()
     next_nodes: List[str] = []
-    if "fetch_weather" in dirty:
-        next_nodes.append("fetch_weather")
-    if "fetch_flights" in dirty:
-        next_nodes.append("fetch_flights")
-    if "fetch_hotels" in dirty:
-        next_nodes.append("fetch_hotels")
-    if "fetch_pois" in dirty:
-        next_nodes.append("fetch_pois")
+    for node in (
+        "fetch_weather", "fetch_flights", "fetch_hotels", "fetch_pois",
+        "generate_packing_list", "generate_cultural_tips", "generate_pre_trip_checklist",
+    ):
+        if node in dirty:
+            next_nodes.append(node)
     if not next_nodes:
         return ["plan_itinerary"]
     return next_nodes

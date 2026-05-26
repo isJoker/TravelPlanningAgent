@@ -35,8 +35,12 @@ class TripState(TypedDict, total=False):
     # ===== plan results =====
     itinerary: List[Dict[str, Any]]
     budget: Dict[str, Any]
+    daily_costs: List[float]
     tips: List[str]
     summary: str
+    packing_list: Dict[str, List[str]]
+    cultural_tips: Dict[str, Any]
+    pre_trip_checklist: List[Dict[str, Any]]
 
     # ===== review =====
     review_passed: bool

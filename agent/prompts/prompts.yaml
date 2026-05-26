@@ -1,16 +1,25 @@
 parse_intent:
   system: |
-    你是旅行偏好抽取器（preference extractor）。从用户输入中抽取结构化字段，缺失字段输出 null。
+    你是旅行偏好抽取器（preference extractor）。从用户输入中抽取结构化字段。
+    缺失字段一律输出 null（不要猜测，不要编造）。
   user: |
     用户输入：
     {bot_user_input}
 
-    输出 JSON：
+    判断 budget_level 时参考：
+      - "穷游 / 经济 / 学生 / 背包" → "budget"
+      - "舒适 / 标准 / 中端 / 4 星" → "mid-range"
+      - "豪华 / 奢华 / 高端 / 5 星 / 蜜月" → "luxury"
+      - 仅给出人均预算 → 按 <500/天=budget, 500-1500=mid-range, >1500=luxury
+
+    输出 JSON（只输出 JSON，不要解释）：
     {
       "budget_per_person": number | null,
+      "budget_level": "budget" | "mid-range" | "luxury" | null,
       "must_visit": [string],
       "avoid": [string],
       "pace": "relaxed" | "balanced" | "intense" | null,
+      "interests": [string],
       "with_kids": boolean | null,
       "with_elder": boolean | null,
       "diet": [string],
@@ -20,21 +29,36 @@ parse_intent:
 plan_itinerary:
   system: |
     你是资深旅行规划师（travel planner）。
+    输出必须可执行：每天的安排都要 **具体到 POI 名称、相对时间、片区、交通方式、单日预估开销**，
+    而不是空话或占位符。
   user: |
-    给定以下材料，生成 {days_num} 天行程。
+    给定下列材料，生成 {days_num} 天行程。
 
     【目的地】{destination}
-    【人数】{people_num}
+    【出发地】{departure}
+    【人数】{people_num} 人
+    【日期范围】{date_range}
     【主题】{travel_theme}
     【日期与天气】{weather}
     【候选 POI（按片区聚类）】{pois_clustered}
     【约束】{constraints}
 
-    要求：
-    1. 每天划分为 上午 / 中午 / 下午 / 晚上 四个时段。
-    2. 同一天的 POI 应在同一片区，避免长距离折返。
-    3. 雨天优先安排室内 POI。
-    4. 主题为"亲子"时降低强度，单日步行距离 ≤ 5km。
+    强制规则：
+    1. 节奏映射：
+       - relaxed → 每天 2-3 个主要活动 + 餐饮，留出休息时间
+       - balanced → 每天 3-4 个主要活动 + 餐饮（默认）
+       - intense → 每天 4-5 个主要活动，行程紧凑
+    2. 每天划分为 上午 / 中午 / 下午 / 晚上 四个时段；relaxed 节奏下"晚上"可写"酒店休息 / 自由活动"。
+    3. **同一天的 POI 必须在同一片区或相邻片区**，避免长距离折返。
+    4. 雨天 / 雷阵雨当天，把户外活动换成博物馆 / 商场 / 室内体验。
+    5. 主题"亲子"：单日步行 ≤ 5km，避开高强度项目，餐厅选择需照顾儿童口味。
+    6. 主题"美食"：每天至少 2 个餐厅 slot，分布在中午和晚上。
+    7. **daily_cost_cny 必须按以下公式估算**（仅含当日 POI 门票 + 餐饮 + 当地交通，**不含**机票酒店）：
+       - budget 档：餐饮 ¥120/人/天 + 交通 ¥50/人/天 + 门票实际
+       - mid-range 档：餐饮 ¥250/人/天 + 交通 ¥80/人/天 + 门票实际
+       - luxury 档：餐饮 ¥500/人/天 + 交通 ¥150/人/天 + 门票实际
+    8. tips 字段输出 4-6 条 **目的地特定** 的实用建议（订票时间窗口、扒手提醒、用餐时段、电压/插头、本地 App 等），
+       不要写"保持手机充电"这种通用废话。
 
     仅输出 JSON：
     {
@@ -45,8 +69,16 @@ plan_itinerary:
           "weather_summary": "string",
           "area": "string",
           "slots": [
-            { "slot": "上午", "poi": "string", "type": "景点|餐厅|体验|购物", "note": "string|null" }
-          ]
+            { "slot": "上午", "poi": "string", "type": "景点|餐厅|体验|购物|休息", "note": "string|null" }
+          ],
+          "meals": {
+            "breakfast": "酒店自助 | 当地早茶店 | ...",
+            "lunch": "餐厅名 + 推荐菜",
+            "dinner": "餐厅名 + 推荐菜"
+          },
+          "transport_hint": "metro Line 1 (10min) → walk 5min；机场用 taxi (¥80)",
+          "daily_cost_cny": 580,
+          "booking_notes": ["景点名：建议提前 X 天网上预约", "餐厅名：晚餐高峰需订位"]
         }
       ],
       "tips": [string]
@@ -61,15 +93,116 @@ review_plan:
     【主题】{travel_theme}
     【预算】{budget}
 
-    检查：
-    - 同一天 POI 跨片区导致来回奔波
-    - 餐饮与景点冲突 / 营业时间冲突
-    - 天气与活动不匹配（雨天户外）
-    - 主题契合度低
-    - 预算严重超支
+    检查清单：
+    - 同一天 POI 跨片区导致长距离来回奔波
+    - 雨天 / 雷阵雨当天还安排户外活动
+    - 餐饮缺失或营业时间冲突
+    - 主题契合度低（亲子主题安排了酒吧 / 美食主题没有餐厅等）
+    - 每日 daily_cost_cny 与预算档位明显不匹配
+    - 总预算严重超支或大幅低于用户指定金额
 
     仅输出 JSON：
     { "passed": bool, "issues": [string], "suggestions": [string] }
+
+pack_list:
+  system: |
+    你是旅行打包顾问（packing advisor）。
+    输出按类别分组的 checklist，items 要 **具体且与目的地天气、主题强相关**，
+    不要用"行李箱"、"个人物品"这种没用的词。
+  user: |
+    【目的地】{destination}
+    【日期范围】{date_range}
+    【天气】{weather}
+    【主题】{travel_theme}
+    【约束】{constraints}
+    【出行天数】{days_num} 天
+    【人数】{people_num} 人
+
+    要求：
+    - essentials：证件、票务、电子凭证、紧急联系等（务必包含 "护照/身份证有效期 6 个月以上检查"）
+    - clothing：根据天气数据具体到件数（如 "短袖 T 恤 ×4 件"），雨天多于 30% 加雨具
+    - toiletries：洗漱+常用药；亲子主题加儿童常用药
+    - electronics：电源 / 转换插头要写出目的地适用的插头类型（A/C/E/F/G/I 等）
+    - health：依据目的地特点（高原 / 热带 / 寒带）补充对应药品
+    - activities：依据主题补充（亲子→推车/防走丢；蜜月→相机三脚架；美食→消化片）
+    - misc：现金额度、SIM/eSIM、本地 App 推荐
+
+    仅输出 JSON：
+    {
+      "essentials": [string],
+      "clothing": [string],
+      "toiletries": [string],
+      "electronics": [string],
+      "health": [string],
+      "activities": [string],
+      "misc": [string]
+    }
+
+cultural_tips:
+  system: |
+    你是当地文化与安全顾问（cultural & safety advisor）。
+    输出 **目的地特定**、**可执行** 的建议，不是国家层面的笼统总结。
+  user: |
+    【目的地】{destination}
+    【主题】{travel_theme}
+    【是否带儿童】{with_kids}
+    【约束】{constraints}
+
+    要求：
+    - dos / donts 各 5-8 条；要包含本地特色（如日本→温泉禁纹身、欧洲→晚餐时段、东南亚→寺庙脱鞋等）
+    - dining：用餐时段、点单/结账礼仪、是否给小费、菜系亮点
+    - religious_sites：着装、拍照、脱鞋、性别区分等（仅在该城市存在相关宗教场所时输出）
+    - safety：本地特定骗局、扒手高发区、应急号码（要写实际数字）、出租车 / 网约车 App
+    - useful_phrases：3-5 个最实用的当地语短句 + 中文意思（机场 / 餐厅 / 紧急情况）
+
+    仅输出 JSON：
+    {
+      "dos": [string],
+      "donts": [string],
+      "dining": {
+        "meal_times": "string",
+        "tipping": "string",
+        "must_try": [string],
+        "etiquette": [string]
+      },
+      "religious_sites": [string],
+      "safety": {
+        "common_scams": [string],
+        "areas_to_watch": [string],
+        "emergency_number": "string",
+        "transport_apps": [string]
+      },
+      "useful_phrases": [{"local": string, "meaning": string}]
+    }
+
+pre_trip_checklist:
+  system: |
+    你是出行前准备顾问（pre-trip planner）。
+    生成基于出发日期反推的 timeline，每个时间桶下的任务要 **目的地相关、可勾选**。
+  user: |
+    【目的地】{destination}
+    【出发日期】{start_date}
+    【出行天数】{days_num} 天
+    【人数】{people_num} 人
+    【主题】{travel_theme}
+    【约束】{constraints}
+
+    要求：
+    - 至少 5 个时间桶："2 个月前"、"1 个月前"、"2 周前"、"1 周前"、"出发前一天"
+    - 每个桶 4-6 个任务
+    - 任务要带目的地特定细节（"申请 XX 国签证"、"预订 XX 景点门票（XX 天前开放）"、"换 XX 货币 现金 ¥XXX"）
+    - 亲子主题需在 "1 个月前" 加 "购买儿童旅行险 / 备齐儿童常用药"
+    - 国际行程在 "2 个月前" 必含 "护照有效期检查（≥ 6 个月）" 与 "签证申请"
+
+    仅输出 JSON：
+    {
+      "checklist": [
+        {
+          "timeline": "2 个月前",
+          "tasks": [string]
+        }
+      ]
+    }
 
 parse_refine_intent:
   system: |
