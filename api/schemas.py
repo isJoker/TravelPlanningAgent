@@ -51,3 +51,26 @@ class FileItem(BaseModel):
 
 class FilesResponse(BaseModel):
     files: List[FileItem]
+
+
+class MessageItem(BaseModel):
+    """Slim, persistence-friendly view of a chat message.
+
+    Sourced from the LangGraph checkpoint (when the process is still alive)
+    plus session-dir artefacts (which survive restarts). It deliberately
+    omits transient process traces such as tool/node logs and partial
+    thoughts — those are kept in-memory only.
+    """
+
+    id: str
+    role: str  # "user" | "ai"
+    content: str
+    version: Optional[int] = None
+    files: List[FileItem] = Field(default_factory=list)
+    timestamp: Optional[float] = None
+
+
+class MessagesResponse(BaseModel):
+    thread_id: str
+    messages: List[MessageItem]
+    expired: bool

@@ -16,11 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from api.connection_manager import ConnectionManager
+from core.checkpointer import get_checkpointer
 from core.logger import logger
 from core.monitor import monitor
 from api.schemas import (
     FileItem,
     FilesResponse,
+    MessageItem,
+    MessagesResponse,
     RefineRequest,
     TripRequest,
     TripResponse,
@@ -155,6 +158,110 @@ async def list_versions(thread_id: str) -> VersionsResponse:
         elif p.suffix == ".md":
             item.md_path = str(p)
     return VersionsResponse(versions=sorted(by_version.values(), key=lambda x: x.version))
+
+
+async def _read_state(thread_id: str) -> Dict[str, Any]:
+    """Read the latest checkpointed channel_values for a thread, if any.
+
+    Returns ``{}`` when no snapshot exists or the saver call fails. Note
+    that ``InMemorySaver`` is process-local, so this returns empty after a
+    backend restart even though session_dir on disk survives.
+    """
+    try:
+        snap = await get_checkpointer().aget_tuple(
+            {"configurable": {"thread_id": thread_id}}
+        )
+    except Exception as e:  # pragma: no cover
+        logger.debug(f"_read_state: aget_tuple failed thread_id={thread_id}: {e}")
+        return {}
+    if snap is None:
+        return {}
+    checkpoint = getattr(snap, "checkpoint", None)
+    if checkpoint is None and isinstance(snap, dict):
+        checkpoint = snap
+    return (checkpoint or {}).get("channel_values", {}) or {}
+
+
+@app.get("/api/trip/{thread_id}/messages", response_model=MessagesResponse)
+async def get_messages(thread_id: str) -> MessagesResponse:
+    """Reconstruct a slim message thread for frontend recovery.
+
+    Sources, in priority order:
+      1. **Session dir** ``output/session_{tid}/trip_v{N}.{md,pdf}`` —
+         authoritative for AI artefacts; survives backend restarts.
+      2. **InMemorySaver checkpoint** —
+         supplies the first user prompt (``bot_user_input``) and a per-version
+         ``summary`` text when the process is still alive.
+
+    The frontend's per-thread localStorage cache complements this with
+    refine-instruction texts, which the backend does not persist verbatim.
+
+    Response shape::
+        { thread_id, messages: [{id, role, content, version?, files[], timestamp?}, ...], expired }
+
+    ``expired=True`` means the session_dir is gone (e.g. it was never
+    started, the user wiped ``output/``, or — for entirely transient runs —
+    the process was restarted before any artefact landed).
+    """
+    sd = _session_dir_for(thread_id)
+    if not sd.exists():
+        return MessagesResponse(thread_id=thread_id, messages=[], expired=True)
+
+    state = await _read_state(thread_id)
+    bot_user_input = (state.get("bot_user_input") or "").strip()
+
+    # Map version → most-recent summary string from the history reducer.
+    summary_by_version: Dict[int, str] = {}
+    for h in state.get("history") or []:
+        try:
+            v = int(h.get("version", 0))
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and h.get("summary"):
+            summary_by_version[v] = str(h["summary"])
+
+    # Discover versions on disk; group .md / .pdf together by version number.
+    versions: Dict[int, List[FileItem]] = {}
+    for p in sorted(sd.iterdir()):
+        if not p.is_file() or not p.name.startswith("trip_v"):
+            continue
+        try:
+            v = int(p.stem.split("_v")[1])
+        except (IndexError, ValueError):
+            continue
+        versions.setdefault(v, []).append(_file_item(p))
+
+    msgs: List[MessageItem] = []
+    sd_ctime = sd.stat().st_ctime
+    for v in sorted(versions.keys()):
+        # First user message — only available when the in-memory state is alive.
+        if v == 1 and bot_user_input:
+            msgs.append(
+                MessageItem(
+                    id=f"u-{thread_id}-v1",
+                    role="user",
+                    content=bot_user_input,
+                    version=v,
+                    timestamp=sd_ctime,
+                )
+            )
+        files_v = versions[v]
+        ai_content = summary_by_version.get(v) or f"v{v} 行程已生成（{len(files_v)} 个产物）"
+        ai_ts = max(
+            (f.mtime for f in files_v if f.mtime is not None), default=sd_ctime
+        )
+        msgs.append(
+            MessageItem(
+                id=f"a-{thread_id}-v{v}",
+                role="ai",
+                content=ai_content,
+                version=v,
+                files=files_v,
+                timestamp=ai_ts,
+            )
+        )
+
+    return MessagesResponse(thread_id=thread_id, messages=msgs, expired=False)
 
 
 @app.get("/api/files", response_model=FilesResponse)
