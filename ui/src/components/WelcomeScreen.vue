@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import InputBox from './InputBox.vue'
+
 const hints = [
   '5 天大阪亲子游',
   '3 天北京文化深度',
@@ -7,7 +9,11 @@ const hints = [
   '5 天三亚海岛度假',
 ]
 
-defineProps<{ onPick?: (s: string) => void }>()
+const inputRef = ref<InstanceType<typeof InputBox> | null>(null)
+
+function pickHint(h: string) {
+  inputRef.value?.applyHint(h)
+}
 </script>
 
 <template>
@@ -20,8 +26,20 @@ defineProps<{ onPick?: (s: string) => void }>()
       生成可下载的行程方案，并支持后续多轮调整。
     </p>
     <div class="hints">
-      <button class="hint-chip" v-for="h in hints" :key="h" @click="onPick && onPick(h)">{{ h }}</button>
+      <button
+        class="hint-chip"
+        v-for="h in hints"
+        :key="h"
+        type="button"
+        @click="pickHint(h)"
+      >
+        {{ h }}
+      </button>
     </div>
   </div>
-  <InputBox :show-form="true" placeholder="描述你的诉求，例如：5 天大阪亲子游，预算每人 8000 元" />
+  <InputBox
+    ref="inputRef"
+    :show-form="true"
+    placeholder="描述你的诉求，例如：5 天大阪亲子游，预算每人 8000 元"
+  />
 </template>

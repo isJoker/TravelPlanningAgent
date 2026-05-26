@@ -9,12 +9,12 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from api.logger import logger
-from tools.mocks.mock_flight import MockFlightProvider
-from tools.mocks.mock_hotel import MockHotelProvider
-from tools.mocks.mock_poi import MockPOIProvider
-from tools.mocks.mock_weather import MockWeatherProvider
+from core.logger import logger
 from tools.providers.base import BaseProvider
+from tools.providers.mocks.mock_flight import MockFlightProvider
+from tools.providers.mocks.mock_hotel import MockHotelProvider
+from tools.providers.mocks.mock_poi import MockPOIProvider
+from tools.providers.mocks.mock_weather import MockWeatherProvider
 
 
 def _truthy(v: str | None) -> bool:

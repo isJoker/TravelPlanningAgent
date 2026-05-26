@@ -39,6 +39,12 @@ export const useHistoryStore = defineStore('history', () => {
   function remove(thread_id: string) {
     items.value = items.value.filter((x) => x.thread_id !== thread_id)
     saveToStorage(items.value)
+    // Also drop the per-thread slim message cache to avoid orphans.
+    try {
+      localStorage.removeItem(`tpa.msgs.${thread_id}`)
+    } catch {
+      /* noop */
+    }
   }
 
   function markExpired(thread_id: string) {

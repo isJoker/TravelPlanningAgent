@@ -1,12 +1,26 @@
-# Travel Planning Agent · 智能旅行规划助手
+<div align="center">
 
-[English](./README.en.md) | **简体中文**
+# ✈️ TravelPlanningAgent
 
-> 一个端到端可运行的 **AI Agent Demo**：FastAPI + LangGraph 1.0 后端 + Vue 3 前端，
-> 用自然语言或表单提交诉求，Agent 自动完成 **天气 / 机票 / 酒店 / 景点 / 行程编排 / 预算 / 自反思 / PDF 导出**，
-> 全程 WebSocket 实时推送 **节点 / 工具调用 / 思维链**，支持**多轮调整**。
+### 基于 LangGraph 多智能体协作的智能旅行规划助手
 
-✈️ 默认 **MOCK 模式零密钥即可运行**；切换到 GPT-4o + 真实 API 仅需改环境变量。
+一句话或一张表单提交诉求，自动完成 **多源数据聚合 + 行程编排 + 自反思 + Markdown / PDF 报告生成**，<br/>
+全程 WebSocket 实时推送 **节点 / 工具调用 / 思维链**，支持 **多轮调整** 与 **MOCK 零密钥运行**。
+
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.0+-1C3C3C)](https://langchain-ai.github.io/langgraph/)
+[![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](./LICENSE)
+
+[English](./README.en.md) · **简体中文**
+
+</div>
+
+<p align="center">
+  <img width="80%" alt="welcome screen" src="https://github.com/user-attachments/assets/54f1f38e-d5a9-4abb-8f01-be1c8085ff07" />
+  <img width="80%" alt="chat stream with thought process" src="https://github.com/user-attachments/assets/7f6b3418-4a21-4ae4-8001-67f7d28c6ff5" />
+</p>
 
 ---
 
@@ -28,6 +42,7 @@
   - [组件树](#组件树)
   - [Pinia 状态管理](#pinia-状态管理)
   - [WebSocket 客户端](#websocket-客户端)
+  - [会话持久化与恢复](#会话持久化与恢复)
 - [端到端数据流](#端到端数据流)
 - [快速开始](#快速开始)
 - [配置项](#配置项)
@@ -60,42 +75,56 @@
 
 ## 整体架构
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Web Frontend  (Vue 3 + TS + Vite + Pinia)                       │
-│  WelcomeScreen / ChatStream / ThoughtProcess / FilesSidebar      │
-│  └─ stores/chat.ts  ←──────  WebSocket  ──────→ /ws/{thread_id}  │
-└──────────────┬───────────────────────────────────────────────────┘
-               │ HTTP (axios) + WebSocket
-┌──────────────▼───────────────────────────────────────────────────┐
-│  FastAPI 服务层  (api/server.py)                                  │
-│  REST: /api/trip · /api/trip/{tid}/refine · /api/files · ...     │
-│  WS:   /ws/{thread_id} ── ConnectionManager (per-thread)         │
-│  asyncio.create_task ─→ Agent                                    │
-└──────────────┬───────────────────────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────────────────────┐
-│  LangGraph Agent 编排层  (agent/)                                 │
-│   plan_graph  /  refine_graph     —— 共享 InMemorySaver          │
-│   12 个节点 + 4 个 LLM 子 agent (parse_intent / plan_itinerary    │
-│                                  / review_plan / parse_refine)   │
-└──┬─────────┬──────────┬──────────┬──────────────────────────────┘
-   ▼         ▼          ▼          ▼
-┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
-│Weather│ │Flight│ │Hotel │ │ POI  │  ← TravelTool 包装器统一上报 monitor
-└──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘
-   ▼        ▼        ▼        ▼
-┌──────────────────────────────────┐
-│ Provider 适配器 (Mock | Real)    │
-└──────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph FE["🖥️ Web Frontend · Vue 3 + TS + Vite + Pinia"]
+        FUI["WelcomeScreen / ChatStream / ThoughtProcess / FilesSidebar"]
+        FStore["stores/chat.ts (Pinia)"]
+        FUI --- FStore
+    end
 
-横切关注点 (Cross-cutting):
-  • ContextVar(session_dir, thread_id)         协程级会话隔离
-  • Monitor 单例 + run_coroutine_threadsafe    任意深度反向推送 WS
-  • TTLCache (cachetools)                       工具结果缓存
-  • Jinja2 + Word/Pandoc/WeasyPrint             多引擎 PDF
-  • 文件落盘: output/session_{thread_id}/trip_v{N}.{md,pdf}
+    subgraph API["⚡ FastAPI 服务层 · api/server.py"]
+        REST["REST · /api/trip · /refine · /files"]
+        WSE["WS · /ws/{thread_id} → ConnectionManager"]
+        Task["asyncio.create_task"]
+        REST --> Task
+    end
+
+    subgraph AG["🧠 LangGraph 编排层 · agent/"]
+        PG["plan_graph (12 节点)"]
+        RG["refine_graph"]
+        Saver[("InMemorySaver · 共享")]
+        Subs["LLM 子 agent · parse_intent / plan_itinerary / review_plan / parse_refine"]
+        PG -.- Saver
+        RG -.- Saver
+        PG --- Subs
+        RG --- Subs
+    end
+
+    subgraph TL["🔧 工具层 · TravelTool 包装器 (统一上报 Monitor)"]
+        TW[Weather]
+        TF[Flight]
+        TH[Hotel]
+        TP[POI]
+    end
+
+    subgraph PV["🔌 Provider 适配器"]
+        Mock["Mock"]
+        Real["Real"]
+    end
+
+    FE <-->|"HTTP (axios) + WebSocket"| API
+    Task --> AG
+    AG --> TL
+    TL --> PV
 ```
+
+> **横切关注点 (Cross-cutting)**
+> - `ContextVar(session_dir, thread_id)` —— 协程级会话隔离
+> - `Monitor` 单例 + `run_coroutine_threadsafe` —— 任意深度反向推送 WS
+> - `TTLCache (cachetools)` —— 工具结果缓存
+> - `Jinja2` + `Word` / `Pandoc` / `WeasyPrint` —— 多引擎 PDF
+> - 文件落盘：`output/session_{thread_id}/trip_v{N}.{md,pdf}`
 
 ---
 
@@ -134,45 +163,55 @@
 
 ## 项目结构
 
+> **分层原则**：依赖方向严格自上而下 —— `core/` 是叶子包（仅依赖 stdlib + 三方），其它包都可以放心引用 `core/*`，
+> 反过来 `core/` 永远不引入 `agent/` `api/` `tools/` `services/` `domain/`，从架构层面杜绝循环依赖。
+
 ```
 TravelPlanningAgent/
-├── api/                         FastAPI 服务层
-│   ├── server.py                  REST + WS 入口；asyncio.create_task 调度 agent
-│   ├── connection_manager.py      WebSocket 连接管理（按 thread_id 路由）
-│   ├── monitor.py                 ToolMonitor 单例，跨协程定向推送
-│   ├── context.py                 ContextVar(session_dir, thread_id)
-│   ├── schemas.py                 HTTP 请求/响应 Pydantic 模型
-│   └── logger.py                  Loguru 配置
+├── core/                        🧰 横切运行时基础设施（叶子包）
+│   ├── logger.py                  Loguru 配置（singleton ``logger``）
+│   ├── context.py                 ContextVar(session_dir, thread_id) —— 协程级会话隔离
+│   ├── monitor.py                 ToolMonitor 单例，跨协程定向推送 WS
+│   ├── llm.py                     MockLLM / RealLLM (init_chat_model) + build_llm()
+│   ├── checkpointer.py            InMemorySaver 单例工厂（plan + refine 共享）
+│   └── prompts.py                 YAML 提示词加载 + 安全 {var} 替换
 │
-├── agent/                       LangGraph 编排层
+├── api/                         🌐 FastAPI HTTP 边界层（极简）
+│   ├── server.py                  REST + WS 入口；asyncio.create_task 调度 agent
+│   ├── connection_manager.py      WebSocket 连接管理（按 thread_id 路由 · 与 fastapi.WebSocket 强耦合）
+│   └── schemas.py                 HTTP 请求/响应 Pydantic 模型
+│
+├── agent/                       🧠 LangGraph 编排层（纯领域）
 │   ├── plan_agent.py              首次规划入口（设置 ContextVar、调度图）
 │   ├── refine_agent.py            多轮调整入口
 │   ├── plan_graph.py              build_plan_graph() — 12 节点状态机
 │   ├── refine_graph.py            build_refine_graph() — 复用 plan 节点 + 派发器
-│   ├── nodes.py                   12 个 plan-graph 节点（含 @_timed 装饰器）
-│   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher
+│   ├── nodes.py                   12 个 plan-graph 节点
+│   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher_router
+│   ├── _timed.py                  共享 @timed 装饰器（plan + refine 节点共用）
 │   ├── agents.py                  4 个 LLM 子 agent（独立 LLM 实例）
-│   ├── llm.py                     MockLLM / RealLLM (init_chat_model)
-│   ├── checkpointer.py            InMemorySaver 单例工厂
-│   ├── load_prompts.py            YAML 提示词加载 + 安全 {var} 替换
-│   └── state.py                   TripState (TypedDict + Annotated reducer)
+│   ├── state.py                   TripState (TypedDict + Annotated reducer)
+│   └── prompts/
+│       └── prompts.yaml           4 个集中式提示词模板（由 core.prompts 装载）
 │
-├── tools/                       工具层
+├── domain/                      📦 纯领域数据模型 / 路由常量
+│   └── refine.py                  RefineIntent + DIRTY_MAP（refine 类型 → 脏节点集合）
+│
+├── tools/                       🔧 工具层
 │   ├── base.py                    TravelTool 包装器（缓存 + monitor + 降级）
 │   ├── factory.py                 provider 工厂（按 USE_MOCK_TOOLS 路由）
 │   ├── cache.py                   TTLCache（key = tool+provider+sha1(kwargs)）
-│   ├── providers/base.py          BaseProvider 抽象
-│   └── mocks/                     mock_weather / mock_flight / mock_hotel / mock_poi
-│       └── fixtures/poi/          东京/北京/大阪 离线 POI 数据
+│   └── providers/                 数据源适配器（Mock + Real 同级共存）
+│       ├── base.py                  BaseProvider 抽象
+│       └── mocks/                   mock_weather / mock_flight / mock_hotel / mock_poi
+│           └── fixtures/poi/        东京 / 北京 / 大阪 离线 POI 数据
 │
-├── models/refine.py             RefineIntent + DIRTY_MAP（refine 类型 → 脏节点集合）
+├── services/                    🛠️ 领域服务
+│   ├── pdf_renderer.py            Markdown 渲染 + 多引擎 PDF 转换
+│   └── templates/
+│       └── trip_report.md         Jinja2 报告模板（与 pdf_renderer 就近放置）
 │
-├── prompt/prompts.yaml          4 个集中式提示词模板
-├── templates/trip_report.md     Jinja2 报告模板
-│
-├── services/pdf_renderer.py     Markdown 渲染 + 多引擎 PDF 转换
-│
-├── ui/                          Vue 3 前端
+├── ui/                          🖥️ Vue 3 前端
 │   ├── src/
 │   │   ├── App.vue                三栏布局：HistorySidebar / Main / FilesSidebar
 │   │   ├── api/{http,trip,ws}.ts  axios + REST + WebSocket 客户端
@@ -184,17 +223,59 @@ TravelPlanningAgent/
 │   │   └── types/{chat,ws,trip}.ts
 │   └── vite.config.ts             /api /ws 代理到后端
 │
-├── scripts/
-│   ├── smoke_test.py              直跑 plan + refine 图（无 HTTP）
-│   ├── smoke_http.py              ASGI 端到端 + WS 管道测试
-│   └── run_*.sh                   启动脚本
+├── scripts/                     🚀 运维脚本
+│   ├── run_backend.sh             启动后端（uvicorn api.server:app）
+│   └── run_frontend.sh            启动前端（npm run dev）
+│
+├── tests/                       ✅ 测试套件（与 pyproject.toml::testpaths 对齐）
+│   └── smoke/
+│       ├── smoke_test.py          直跑 plan + refine 图（无 HTTP）
+│       └── smoke_http.py          ASGI 端到端 + WS 管道测试
 │
 ├── output/session_{thread_id}/  会话产物（trip_v{N}.md / .pdf）
-├── DESIGN.md                    v0.3 完整设计文档（权威参考）
+├── DESIGN.md                    完整设计文档（权威参考）
 ├── requirements.txt
 ├── pyproject.toml
 └── README.md / README.en.md
 ```
+
+### 依赖方向（一图）
+
+```
+            ┌─────────────────────────────────────────────┐
+            │  api  (HTTP 边界)                           │
+            │   server.py · schemas.py · connection_mgr   │
+            └─────────────┬───────────────────────────────┘
+                          │ 仅向下依赖
+        ┌─────────────────┼──────────────────┐
+        ▼                 ▼                  ▼
+   ┌─────────┐      ┌──────────┐       ┌──────────┐
+   │  agent  │      │ services │       │  tools   │
+   │ (graphs │      │ (pdf,    │       │ (Travel  │
+   │  +nodes)│      │  jinja)  │       │  Tool +  │
+   │         │      │          │       │ provider)│
+   └────┬────┘      └────┬─────┘       └────┬─────┘
+        │                │                  │
+        └────────────────┼──────────────────┘
+                         ▼
+                ┌────────────────┐
+                │  core  (叶子)  │  ← logger / context / monitor /
+                │                │     llm / checkpointer / prompts
+                └────────────────┘
+                         ▲
+                ┌────────┴───────┐
+                │     domain     │  ← refine.py（纯数据 + 路由表）
+                └────────────────┘
+```
+
+| 包 | 角色 | 依赖谁 |
+|----|------|--------|
+| `core/` | 横切基础设施（leaf） | 仅 stdlib + 三方 |
+| `domain/` | 领域数据模型（leaf） | 仅 stdlib + Pydantic |
+| `tools/` | 数据源工具 + Provider 适配 | `core` |
+| `services/` | 领域服务（PDF/模板） | `core` |
+| `agent/` | LangGraph 编排 | `core` · `domain` · `tools` · `services` |
+| `api/` | FastAPI HTTP 边界 | `core` · `agent` |
 
 ---
 
@@ -204,39 +285,30 @@ TravelPlanningAgent/
 
 #### Plan 图（`agent/plan_graph.py`）— 首次规划
 
-```
-                     START
-                       │
-                       ▼
-              validate_input   ── 校验/补默认/算 date_range
-                       │
-                       ▼
-               parse_intent    ── LLM：抽取约束
-       ┌───────────────┼───────────────┬───────────────┐
-       ▼               ▼               ▼               ▼
-  fetch_weather   fetch_flights   fetch_hotels   fetch_pois     (并行 fan-out)
-       └───────────────┴───────────────┴───────────────┘
-                       │  (隐式 join)
-                       ▼
-                 cluster_pois   ── 按 area 聚类 → N 个 day bucket
-                       │
-                       ▼
-                plan_itinerary  ◄────┐
-                       │             │
-                       ▼             │ 不通过 & retry<2
-              estimate_budget        │
-                       │             │
-                       ▼             │
-                 review_plan ────────┘  (LLM 自反思)
-                       │ passed
-                       ▼
-                  render_pdf   ── MD（必有）+ PDF（可选）
-                       │
-                       ▼
-                   finalize    ── 推送 task_result
-                       │
-                       ▼
-                      END
+```mermaid
+flowchart TD
+    Start([START]) --> VI["validate_input · 校验/补默认/算 date_range"]
+    VI --> PI["parse_intent · LLM 抽取约束"]
+    PI --> FW[fetch_weather]
+    PI --> FF[fetch_flights]
+    PI --> FH[fetch_hotels]
+    PI --> FP[fetch_pois]
+    FW --> CP["cluster_pois · 按 area 聚类 → N 个 day bucket"]
+    FF --> CP
+    FH --> CP
+    FP --> CP
+    CP --> PL[plan_itinerary]
+    PL --> EB[estimate_budget]
+    EB --> RP{"review_plan · LLM 自反思"}
+    RP -->|"不通过 & retry &lt; 2"| PL
+    RP -->|"passed"| RD["render_pdf · MD（必有）+ PDF（可选）"]
+    RD --> FN["finalize · 推送 task_result"]
+    FN --> End([END])
+
+    classDef parallel fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef llm fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+    class FW,FF,FH,FP parallel
+    class PI,PL,RP llm
 ```
 
 **关键实现点**
@@ -249,28 +321,35 @@ TravelPlanningAgent/
 
 #### Refine 图（`agent/refine_graph.py`）— 多轮调整
 
-```
-            START → load_previous_state → parse_refine_intent
-                                                │
-                                  ┌─────────────┼─────────────┐
-                                  ▼             ▼             ▼
-                            dispatcher_router (条件边，按 dirty_nodes)
-                            ┌─────────┬──────────┬──────────┐
-                            ▼         ▼          ▼          ▼
-                       fetch_w   fetch_f   fetch_h    fetch_p → cluster_pois
-                            └─────────┴──────────┴──────────┘
-                                            │
-                                            ▼
-                                     plan_itinerary
-                                            │
-                                            ▼
-                                     estimate_budget → review_plan_lite
-                                            │
-                                            ▼
-                                     render_pdf → finalize (v+1) → END
+```mermaid
+flowchart TD
+    Start([START]) --> LP["load_previous_state · 从 saver 读 v_n"]
+    LP --> PRI["parse_refine_intent · LLM → RefineIntent + dirty_nodes"]
+    PRI --> DR{"dispatcher_router · 按 dirty_nodes 路由"}
+    DR -.->|"fetch_weather ∈ dirty"| FW[fetch_weather]
+    DR -.->|"fetch_flights ∈ dirty"| FF[fetch_flights]
+    DR -.->|"fetch_hotels ∈ dirty"| FH[fetch_hotels]
+    DR -.->|"fetch_pois ∈ dirty"| FP[fetch_pois]
+    DR -.->|"否则跳过 fetch"| PL[plan_itinerary]
+    FP --> CP[cluster_pois]
+    FW --> PL
+    FF --> PL
+    FH --> PL
+    CP --> PL
+
+    PL --> EB[estimate_budget]
+    EB --> RPL[review_plan_lite]
+    RPL --> RD["render_pdf · trip_v(n+1)"]
+    RD --> FN["finalize · version+1"]
+    FN --> End([END])
+
+    classDef parallel fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef llm fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+    class FW,FF,FH,FP,CP parallel
+    class PRI,PL,RPL llm
 ```
 
-`refine_intent.type` → `dirty_nodes` 映射在 `models/refine.py::DIRTY_MAP`：
+`refine_intent.type` → `dirty_nodes` 映射在 `domain/refine.py::DIRTY_MAP`：
 
 | RefineType | dirty_nodes |
 |------------|-------------|
@@ -305,62 +384,65 @@ class TripState(TypedDict, total=False):
 
 ### 跨协程实时推送 (ContextVar + Monitor)
 
-后端的"任意深度都能把事件推到正确的前端连接"靠三件事：
+后端的"任意深度都能把事件推到正确的前端连接"靠三件事，三个模块都位于 `core/`（横切基础设施）：
 
-1. **`api/context.py`** — `session_dir` / `thread_id` 用 `ContextVar` 存储；
+1. **`core/context.py`** — `session_dir` / `thread_id` 用 `ContextVar` 存储；
    `run_plan_agent` 入口用 `set_session_context` / `set_thread_context` 写入，
    asyncio 任务及其衍生协程自然继承。
-2. **`api/monitor.py::ToolMonitor`** — 进程级单例，
-   工具/节点直接 `from api.monitor import monitor` 调用 `report_*`，
+2. **`core/monitor.py::ToolMonitor`** — 进程级单例，
+   工具/节点直接 `from core.monitor import monitor` 调用 `report_*`，
    它从 ContextVar 读 `thread_id`，再用
    `asyncio.run_coroutine_threadsafe(manager.send_to_thread(...), manager.loop)`
    把事件投递到 FastAPI 主事件循环。
 3. **`api/connection_manager.py::ConnectionManager`** — 维护
    `Dict[thread_id → WebSocket]`，`send_to_thread` 选中目标连接发送。
+   它依赖 `fastapi.WebSocket` 类型，因此留在 HTTP 边界包 `api/` 中（不下沉到 `core/`）。
 
-```
-[Tool / Node]           monitor.report_tool("WeatherTool", {...})
-       │                              │
-       ▼                              ▼
-[Monitor 单例] ── get_thread_id() ──→ 拿到 thread_id
-       │
-       ▼
-asyncio.run_coroutine_threadsafe(
-    manager.send_to_thread(payload, thread_id),
-    manager.loop    ← FastAPI lifespan startup 时绑定
-)
-       ▼
-[ConnectionManager.send_to_thread]
-    ws = active_connections[thread_id]
-    await ws.send_json(payload)
-       ▼
-[前端 ws.onmessage] → chat store handleEvent → 更新 messages[].logs
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as Tool / Node
+    participant M as Monitor (singleton)
+    participant CV as ContextVar
+    participant L as FastAPI loop
+    participant CM as ConnectionManager
+    participant W as WebSocket
+    participant FS as Frontend chat store
+
+    T->>M: report_tool("WeatherTool", {...})
+    M->>CV: get_thread_id()
+    CV-->>M: thread_id
+    M->>L: run_coroutine_threadsafe(send_to_thread)
+    L->>CM: send_to_thread(payload, thread_id)
+    CM->>W: ws.send_json(payload)
+    W->>FS: onmessage
+    FS->>FS: handleEvent → 修改 messages[].logs
 ```
 
 **收益**：节点/工具是普通 `async def`，不需要持有 websocket 引用或参数透传，多用户并发安全。
 
 ### Checkpointer 与多轮调整
 
-- `agent/checkpointer.py` 提供 `get_checkpointer() → InMemorySaver` 单例
+- `core/checkpointer.py` 提供 `get_checkpointer() → InMemorySaver` 单例
 - `plan_graph` 与 `refine_graph` **共用同一个 saver**
 - 调用时 `config = {"configurable": {"thread_id": thread_id}}`，LangGraph 自动按 thread_id 加载/合并 checkpoint
 - `refine_agent.run_refine_agent` 仅传 `{"refine_request": instruction}`，其余字段由 saver 合并恢复
 - `load_previous_state` 通过 `saver.aget_tuple(config)` 读取 `version`，新版本号 `+1`
 
 > ⚠️ **限制**：进程重启后 InMemorySaver 状态全部丢失。
-> 升级路径：把 `get_checkpointer()` 切到 `SqliteSaver` / 自定义 PostgresSaver，
+> 升级路径：把 `core/checkpointer.py::get_checkpointer()` 切到 `SqliteSaver` / 自定义 PostgresSaver，
 > 接口完全兼容，无需改业务代码。
 
 ### LLM 抽象层
 
-`agent/llm.py` 提供两套实现 + 一个工厂：
+`core/llm.py` 提供两套实现 + 一个工厂：
 
 | 类 | 触发条件 | 行为 |
 |-----|----------|------|
 | `MockLLM` | `MOCK_LLM=true`（默认）或缺 `OPENAI_API_KEY` | 按 prompt 关键词返回**结构化合规**的桩 JSON（4 种 prompt 各一种） |
 | `RealLLM` | `MOCK_LLM=false` 且有 key | LangChain 1.0 `init_chat_model("gpt-4o", model_provider="openai", ...)` |
 
-`agents.py` 中 4 个子 agent 各持有独立 LLM 实例，方便后续切不同模型：
+`agent/agents.py` 中 4 个子 agent 各持有独立 LLM 实例，方便后续切不同模型：
 
 | 子 agent | 调用节点 | 输入 → 输出 |
 |---------|---------|------------|
@@ -369,19 +451,21 @@ asyncio.run_coroutine_threadsafe(
 | `review_plan` | `review_plan` | itinerary/weather/budget → `{passed, issues, suggestions}` |
 | `parse_refine_intent` | `parse_refine_intent` | refine_request + 摘要 → `RefineIntent + dirty_nodes` |
 
-`load_prompts.py` 用**手动 `{var}` 替换**而非 `str.format`，避免提示词中 JSON 大括号被误识别。
+`core/prompts.py` 用**手动 `{var}` 替换**而非 `str.format`，避免提示词中 JSON 大括号被误识别。提示词模板放在 `agent/prompts/prompts.yaml`，与消费方就近放置。
 
 ### 工具层 (Mock/Real 切换)
 
-```
-TravelTool.fetch(**kwargs)
-    │
-    ├─ monitor.report_tool_start(name, kwargs)
-    ├─ cache.get(key=tool+provider+sha1(kwargs))      ← 命中即返
-    ├─ provider.fetch(**kwargs)                       ← Mock 或 Real
-    │     └─ 失败 → provider.fallback.fetch(**kwargs) (可选)
-    ├─ cache.set(key, result)
-    └─ monitor.report_tool_end(name, summary)
+```mermaid
+flowchart LR
+    A["TravelTool.fetch(**kwargs)"] --> B["monitor.report_tool_start(name, kwargs)"]
+    B --> C{"cache.get · key=tool+provider+sha1(kwargs)"}
+    C -->|"hit"| F["monitor.report_tool_end(name, summary)"]
+    C -->|"miss"| D["provider.fetch · Mock | Real"]
+    D -->|"ok"| E["cache.set(key, result)"]
+    D -->|"fail & has fallback"| D2["provider.fallback.fetch"]
+    D2 --> E
+    E --> F
+    F --> G([result])
 ```
 
 - `tools/factory.py` 按 `USE_MOCK_TOOLS` 选 provider；将来扩展时改路由表即可
@@ -410,23 +494,25 @@ TravelTool.fetch(**kwargs)
 
 ### 组件树
 
-```
-App.vue (三栏布局)
-├── HistorySidebar.vue          ← Pinia history store，localStorage 持久化
-├── main
-│   ├── topbar (status dot + thread_id)
-│   ├── 当无会话时:  WelcomeScreen.vue
-│   │                 ├── 4 个示例提示芯片
-│   │                 └── InputBox(showForm=true) → TripFormInline
-│   └── 当在会话时:  ChatStream.vue + InputBox(showForm=false)
-│                     └── ChatStream
-│                          ├── MessageUser.vue (用户气泡)
-│                          └── MessageAi.vue
-│                               ├── ThoughtProcess.vue (折叠)
-│                               │    └── ToolCallCard.vue × N
-│                               ├── marked + DOMPurify 渲染 markdown
-│                               └── FileCard.vue × N (PDF/MD 下载)
-└── FilesSidebar.vue            ← chat.files (实时同步)
+```mermaid
+flowchart TB
+    App["App.vue · 三栏布局"]
+    App --> HS[HistorySidebar.vue]
+    App --> Main["main 区"]
+    App --> FS[FilesSidebar.vue]
+    Main --> Top["topbar · status dot + thread_id"]
+    Main --> WS["WelcomeScreen.vue (无会话)"]
+    Main --> CS["ChatStream.vue + InputBox (有会话)"]
+    WS --> Chips["4 个示例提示芯片"]
+    WS --> Form["InputBox(showForm=true) → TripFormInline"]
+    CS --> MU["MessageUser.vue · 用户气泡"]
+    CS --> MA[MessageAi.vue]
+    MA --> TP["ThoughtProcess.vue · 折叠面板"]
+    MA --> MD["marked + DOMPurify · markdown 渲染"]
+    MA --> FC["FileCard.vue × N · PDF/MD 下载"]
+    TP --> TC["ToolCallCard.vue × N"]
+    HS -.- HStore["history store · localStorage"]
+    FS -.- ChatFiles["chat.files · 实时同步"]
 ```
 
 ### Pinia 状态管理
@@ -441,15 +527,18 @@ state:
   files    : FileItem[]           // 右侧栏数据源
 
 actions:
-  startNewTrip(req, displayText)  // POST /api/trip + 建 WS + 推 history
-  sendRefine(instruction)         // POST /api/trip/{tid}/refine
-  selectThread(tid)               // 切换会话（重连 WS、清空消息、刷新文件）
+  startNewTrip(req, displayText)  // POST /api/trip + 建 WS + 推 history + persist()
+  sendRefine(instruction)         // POST /api/trip/{tid}/refine + persist()
+  selectThread(tid)               // ① 加载 localStorage 瘦身缓存秒显
+                                  // ② 重连 WS / 刷新文件
+                                  // ③ GET /api/trip/{tid}/messages 与缓存合并回写
   newSession()                    // 关 WS、清空、回欢迎页
 
 私有:
   ensureWs(tid)                   // TripWS 单例（自动重连）
   handleEvent(msg)                // 路由所有 WS 事件 → 修改 messages
   patchLogTitle(kind, name, ...)  // 把同名 running 日志条目改为 done
+  persist()                       // 把当前线程的"瘦身版" messages 写入 localStorage
 ```
 
 事件 → 状态 映射规则（见 `handleEvent`）：
@@ -462,13 +551,14 @@ actions:
 | `node_start` / `node_end` | 同上，但 kind=node |
 | `review_iteration` | append review 卡片（passed → done，否则 error） |
 | `partial_thought` | append 一条 info |
-| `task_result` | 当前 AI 消息：`content = result; files = files; status = 'done'`；并刷新 `/api/files` |
-| `error` | append error 卡片 + 标记当前 AI 消息为 error |
+| `task_result` | 当前 AI 消息：`content = result; files = files; status = 'done'`；并刷新 `/api/files`、`persist()` |
+| `error` | append error 卡片 + 标记当前 AI 消息为 error；`persist()` |
 
 #### `stores/history.ts` — 历史会话
 
 最多保留 50 条，按 `last_active` 倒序，持久化到 `localStorage` 的 `tpa.history.v1` 键。
 `startNewTrip` 时 `upsert`，`refine` 不会改变历史顺序（thread_id 已存在）。
+`remove(tid)` 同时清理对应的 `tpa.msgs.<tid>` 缓存。
 
 ### WebSocket 客户端
 
@@ -480,106 +570,158 @@ actions:
 - 事件分发：`on(event, fn)` 订阅；`'*'` 监听所有事件
 - 单例：`chat store::ensureWs(tid)` 保证同一 thread_id 复用同一连接
 
+### 会话持久化与恢复
+
+> 切换或刷新会话时如何"不丢消息"——后端补一个权威接口，前端用瘦身 LRU 缓存秒显。
+
+#### 设计动机
+
+`InMemorySaver` 进程内保存 LangGraph state，进程重启即丢；
+而前端早期只在 `localStorage` 里缓存了 `HistoryItem` 元数据，切换会话或刷新页面会清空 `messages`。
+为同时满足"秒开 / 跨刷新 / 不爆配额"三个目标，引入两层互补：
+
+```mermaid
+flowchart LR
+    subgraph Server["📦 服务端权威源"]
+        SD["session_dir<br/>trip_v{N}.{md,pdf}"]
+        CK["InMemorySaver<br/>(channel_values)"]
+    end
+    subgraph Client["🖥️ 前端 localStorage"]
+        H["tpa.history.v1<br/>HistoryItem[] (≤50)"]
+        M["tpa.msgs.&lt;tid&gt;<br/>SlimMessage[] (LRU≤20)"]
+    end
+    SD -->|"GET /messages"| Resp["MessagesResponse"]
+    CK -->|"aget_tuple"| Resp
+    Resp --> Client
+    Client -.->|"selectThread 秒显"| UI["chat store"]
+    Resp -.->|"merge 覆盖 AI 内容"| UI
+```
+
+#### 后端：`GET /api/trip/{tid}/messages`
+
+按版本组装出一份"瘦身"消息流，给前端做切换/刷新时的权威源。
+
+| 数据来源 | 提供什么 | 存活性 |
+|---------|---------|--------|
+| `output/session_{tid}/trip_v{N}.{md,pdf}` | 各版本 AI 产出文件 | ✅ 跨重启保留 |
+| `InMemorySaver.channel_values` | `bot_user_input` (v1 用户输入)、`history[].summary` | ❌ 进程内 |
+
+返回结构：
+
+```jsonc
+{
+  "thread_id": "trip-xxx",
+  "expired": false,                     // true 表示 session_dir 已不存在
+  "messages": [
+    { "id": "u-...-v1", "role": "user", "content": "...", "version": 1, "timestamp": ... },
+    { "id": "a-...-v1", "role": "ai",   "content": "v1 摘要", "version": 1, "files": [...], "timestamp": ... },
+    { "id": "a-...-v2", "role": "ai",   "content": "v2 摘要", "version": 2, "files": [...], "timestamp": ... }
+  ]
+}
+```
+
+> ⚠️ 后端不持久化每次 refine 的用户输入文本（state 仅保留最新一条 `refine_request`）。
+> 这正是"前端瘦身缓存"补充的部分。
+
+#### 前端：`tpa.msgs.<thread_id>` 瘦身缓存
+
+按线程拆 key、按数量做 LRU、丢弃过程事件，把 localStorage 占用钉死在 ~1 MB 量级。
+
+| 维度 | 选择 | 原因 |
+|------|------|------|
+| 存储键 | `tpa.msgs.<tid>` 单线程一 key | 改某线程不会引发全量序列化 |
+| LRU 上限 | `SLIM_THREAD_LIMIT = 20` | 超出按 `tpa.history.v1.last_active` 顺序裁剪 |
+| 持久字段 | `id / role / content / files / version / timestamp / status` | 用户文字 + AI 摘要 + 产物，跨刷新足以重建 UI |
+| 丢弃字段 | `logs[]`、`partial_thought`、streaming 占位 | 过程事件刷新后无意义；占主要体积 |
+| 触发点 | `task_result`、`error`、`startNewTrip`、`sendRefine` | 都是消息从 streaming → settled 的边界 |
+
+`selectThread(tid)` 走三段式：
+
+1. **秒显**：从 `localStorage` 读瘦身缓存写入 `messages.value`，立即可见。
+2. **重连**：`ensureWs(tid)` + `refreshFiles()`。
+3. **校准**：`GET /api/trip/{tid}/messages` 拉权威列表，与缓存按 `version` 对齐合并；
+   AI 字段以服务端为准，用户消息（含 refine 文本）以缓存为准；
+   合并结果写回 `tpa.msgs.<tid>`。
+   响应中 `expired=true` 时，把对应历史项标记为已过期，但保留缓存让用户仍能查看。
+
+> 切线程发起的 `loadMessages` 是异步的；返回前若用户又点了别的线程，
+> `chat store` 用 `threadId.value !== tid` 守卫直接丢弃过期响应，避免 UI 抖动。
+
 ---
 
 ## 端到端数据流
 
 ### 首次规划
 
-```
-[1] 用户在 WelcomeScreen 填表 + 输入诉求 → 点击 ➤
-       │
-       ▼
-[2] chat.startNewTrip(req, displayText)
-       ├─ messages.push(user + emptyAi)
-       ├─ POST /api/trip ──→ {trip_id, thread_id, version:1}
-       ├─ ensureWs(thread_id) ── new WebSocket(/ws/{thread_id})
-       └─ history.upsert(...)
-       │
-       ▼ (后端)
-[3] api/server.py::create_trip
-       └─ asyncio.create_task(run_plan_agent(payload, thread_id, trip_id))
-              │
-              ▼
-[4] agent/plan_agent.py
-       ├─ set_session_context / set_thread_context (ContextVar)
-       ├─ monitor.report_session_dir(...)        ──→ WS: session_created
-       └─ build_plan_graph().ainvoke(initial, config={thread_id})
-              │
-              ▼
-[5] plan_graph 执行（每个节点）
-       ├─ @_timed: monitor.report_node_start    ──→ WS: node_start
-       ├─ TravelTool.fetch
-       │     ├─ monitor.report_tool_start       ──→ WS: tool_start
-       │     ├─ provider.fetch (Mock / Real)
-       │     └─ monitor.report_tool_end         ──→ WS: tool_end
-       ├─ LLM 调用 (Mock / GPT-4o)
-       └─ @_timed: monitor.report_node_end      ──→ WS: node_end
-              │
-              ▼
-[6] review_plan
-       └─ monitor.report_review(iter, passed)   ──→ WS: review_iteration
-              │ (passed)
-              ▼
-[7] render_pdf
-       ├─ Jinja2 → trip_v1.md
-       ├─ convert_md_to_pdf_real → trip_v1.pdf (best-effort)
-       └─ files = [{name, path, url, ...}]
-              │
-              ▼
-[8] finalize
-       └─ monitor.report_task_result(summary, version, files) ──→ WS: task_result
-              │
-              ▼ (前端)
-[9] chat.handleEvent('task_result')
-       ├─ lastAi.content = result
-       ├─ lastAi.files = files
-       ├─ lastAi.status = 'done'
-       ├─ status = 'ok'
-       └─ refreshFiles() ── GET /api/files?thread_id=...
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant FE as Frontend
+    participant API as FastAPI
+    participant AG as PlanGraph
+    participant T as TravelTool
+    participant LLM as LLM
+    participant W as WebSocket
 
-期间，所有 node_*/tool_*/review_* 事件实时进入 messages[lastAi].logs[]，
-ThoughtProcess 组件自动显示在折叠面板中。
+    U->>FE: 填表与输入诉求, 点击发送
+    FE->>API: POST /api/trip
+    API-->>FE: 返回 trip_id 与 thread_id, version=1
+    FE->>W: 建立 WebSocket 连接 ws/thread_id
+    API->>AG: asyncio.create_task 调度 run_plan_agent
+    AG->>W: session_created
+    AG->>AG: 启动 build_plan_graph 状态机
+
+    loop 每个节点
+        AG->>W: node_start
+        AG->>T: TravelTool.fetch
+        T->>W: tool_start
+        T->>T: provider.fetch  Mock 或 Real
+        T->>W: tool_end
+        AG->>LLM: 调用 Mock 或 GPT-4o
+        AG->>W: node_end
+    end
+
+    AG->>W: review_iteration  passed
+    AG->>AG: render_pdf 生成 trip_v1.md 与 trip_v1.pdf
+    AG->>W: task_result 携带 version 与 files
+    W-->>FE: 推送事件
+    FE->>FE: 更新当前 AI 消息 status=ok
+    FE->>API: GET /api/files
 ```
+
+> 期间，所有 `node_*` / `tool_*` / `review_*` 事件实时进入 `messages[lastAi].logs[]`，`ThoughtProcess` 组件自动显示在折叠面板中。
 
 ### 多轮调整
 
-```
-[1] 用户在已存在会话中输入 "把第 3 天换成室内活动" → ➤
-       │
-       ▼
-[2] chat.sendRefine(instruction)
-       ├─ messages.push(user + emptyAi)
-       └─ POST /api/trip/{thread_id}/refine
-       │
-       ▼ (后端)
-[3] api/server.py::refine_trip
-       └─ asyncio.create_task(run_refine_agent(instruction, thread_id))
-              │
-              ▼
-[4] agent/refine_agent.py
-       └─ build_refine_graph().ainvoke({"refine_request": instruction}, config={thread_id})
-              │
-              ▼
-[5] load_previous_state (从 InMemorySaver 读 v_n)
-       └─ version = v_n + 1
-              │
-              ▼
-[6] parse_refine_intent (LLM)
-       └─ {refine_intent: {type:'rework_day', targets:['day_3']},
-           dirty_nodes: {plan_itinerary}}
-              │
-              ▼
-[7] dispatcher_router(state) → ['plan_itinerary']  (按 dirty_nodes 决定下一跳)
-              │
-              ▼
-[8] plan_itinerary → estimate_budget → review_plan_lite → render_pdf (trip_v2.md/pdf)
-              │
-              ▼
-[9] finalize → task_result(version=2, files=[...trip_v2.*])
-              │
-              ▼
-[10] 前端：新 AI 消息 content/files 就位，FilesSidebar 自动多出 trip_v2.pdf
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant FE as Frontend
+    participant API as FastAPI
+    participant AG as RefineGraph
+    participant Sv as InMemorySaver
+    participant LLM as LLM
+    participant W as WebSocket
+
+    U->>FE: 输入 把第3天换成室内活动
+    FE->>API: POST /api/trip/thread_id/refine
+    API->>AG: asyncio.create_task 调度 run_refine_agent
+
+    AG->>Sv: aget_tuple 读取上一版 state v_n
+    Sv-->>AG: 返回 v_n 完整状态
+    AG->>AG: version = v_n + 1
+
+    AG->>LLM: parse_refine_intent
+    LLM-->>AG: 返回 RefineIntent 与 dirty_nodes
+    AG->>AG: dispatcher_router 选中 plan_itinerary
+
+    AG->>AG: plan_itinerary 然后 estimate_budget 然后 review_plan_lite
+    AG->>AG: render_pdf 生成 trip 新版本
+    AG->>W: task_result 携带新版本号与 files
+    W-->>FE: 推送事件
+    FE->>FE: 新 AI 消息就位, FilesSidebar 多出新版 pdf
 ```
 
 ---
@@ -616,10 +758,10 @@ cd ui && npm install && npm run dev
 
 ```bash
 # 直跑 plan + refine（生成 trip_v1.md / trip_v2.md）
-PYTHONPATH=. python scripts/smoke_test.py
+PYTHONPATH=. python tests/smoke/smoke_test.py
 
 # 端到端 HTTP + Monitor→WS 管道
-PYTHONPATH=. python scripts/smoke_http.py
+PYTHONPATH=. python tests/smoke/smoke_http.py
 ```
 
 ---
@@ -679,6 +821,7 @@ VITE_WS_BASE=ws://localhost:8000
 | `POST` | `/api/trip` | 启动新规划 → `{trip_id, thread_id, status, version}` |
 | `POST` | `/api/trip/{thread_id}/refine` | 提交调整指令 |
 | `GET`  | `/api/trip/{thread_id}/versions` | 列出 MD/PDF 各版本 |
+| `GET`  | `/api/trip/{thread_id}/messages` | 重建会话消息（用户输入 + 各版本 AI 摘要 + 文件）；`expired=true` 表示 session 目录已不存在 |
 | `GET`  | `/api/files?thread_id=X` | 列出该会话目录下所有文件 |
 | `GET`  | `/api/download?path=ABS` | 下载文件（路径限定在 `output/` 内） |
 | `WS`   | `/ws/{thread_id}` | 服务端→客户端事件流 |
@@ -722,14 +865,14 @@ VITE_WS_BASE=ws://localhost:8000
 
 ## 冒烟测试
 
-每次后端改动后，两个脚本必须保持绿：
+每次后端改动后，两个脚本必须保持绿（与 `pyproject.toml::testpaths = ["tests"]` 对齐）：
 
 ```text
-scripts/smoke_test.py    plan + refine 各产出 trip_v1.md / trip_v2.md
-scripts/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../refine
-                         + Monitor→WS 管道（验证 session_created / node_start×12 /
-                            node_end×12 / tool_start×5 / tool_end×5 /
-                            review_iteration / task_result）
+tests/smoke/smoke_test.py    plan + refine 各产出 trip_v1.md / trip_v2.md
+tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../refine
+                             + Monitor→WS 管道（验证 session_created / node_start×12 /
+                                node_end×12 / tool_start×5 / tool_end×5 /
+                                review_iteration / task_result）
 ```
 
 ---
@@ -738,6 +881,7 @@ scripts/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../refine
 
 1. **InMemorySaver** 在进程内按 `thread_id` 隔离 State；
    后端重启后历史会话失效（前端 localStorage 仍记录，但新指令会触发全新规划）。
+   切换/刷新会话时不会丢消息——参见 [会话持久化与恢复](#会话持久化与恢复)。
 2. **MOCK_LLM** 对 4 类 prompt 都返回结构合规的桩 JSON，离线即可全图跑通。
 3. **Mock 工具**输出由输入哈希做种子，**完全确定性**，便于截图与冒烟。
 4. POI fixtures 自带 **东京 / 北京 / 大阪**；其他城市走 Faker 合成池。

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, reactive } from 'vue'
+import { ref, computed, reactive, nextTick } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import TripFormInline from './TripFormInline.vue'
 import type { TripRequest } from '@/types/trip'
@@ -13,6 +13,7 @@ const emit = defineEmits<{ (e: 'submitted'): void }>()
 
 const chat = useChatStore()
 const text = ref('')
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
 const form = reactive<TripRequest>({
   destination: '',
@@ -58,6 +59,59 @@ function onEnter(e: KeyboardEvent) {
     send()
   }
 }
+
+/**
+ * Best-effort parse a quick-pick hint like "5 天大阪亲子游" into form fields.
+ * Returns only the fields that could be confidently extracted.
+ */
+function parseHint(hint: string): Partial<TripRequest> {
+  const out: Partial<TripRequest> = {}
+  const dayMatch = hint.match(/(\d+)\s*天/)
+  if (dayMatch) out.days_num = Number(dayMatch[1])
+
+  const rest = hint.replace(/^\s*\d+\s*天\s*/, '').trim()
+  // Themes supported by TripFormInline's <select>; keep in sync with that list.
+  const supportedThemes = ['亲子', '蜜月', '美食', '户外', '文化']
+  // Extra keywords that may follow the destination but aren't in the dropdown.
+  const themeKeywords = [...supportedThemes, '海岛', '深度', '度假']
+
+  let themeIdx = -1
+  let matchedTheme = ''
+  for (const t of themeKeywords) {
+    const i = rest.indexOf(t)
+    if (i >= 0 && (themeIdx < 0 || i < themeIdx)) {
+      themeIdx = i
+      matchedTheme = t
+    }
+  }
+
+  if (themeIdx > 0) {
+    out.destination = rest.slice(0, themeIdx).trim()
+    out.travel_theme = supportedThemes.includes(matchedTheme) ? matchedTheme : ''
+  } else {
+    out.destination = rest.replace(/(之旅|游)$/, '').trim()
+  }
+  return out
+}
+
+/**
+ * Apply a quick-pick hint from WelcomeScreen: fill the textarea with the hint
+ * text, pre-fill the inline form fields when possible, and focus the input
+ * so the user can edit or submit immediately.
+ */
+async function applyHint(hint: string) {
+  text.value = hint
+  if (props.showForm) {
+    const parsed = parseHint(hint)
+    if (parsed.days_num !== undefined) form.days_num = parsed.days_num
+    if (parsed.destination) form.destination = parsed.destination
+    if (parsed.travel_theme !== undefined) form.travel_theme = parsed.travel_theme
+  }
+  await nextTick()
+  textareaRef.value?.focus()
+}
+
+defineExpose({ applyHint })
 </script>
 
 <template>
@@ -69,6 +123,7 @@ function onEnter(e: KeyboardEvent) {
     />
     <div class="input-card">
       <textarea
+        ref="textareaRef"
         v-model="text"
         rows="1"
         :placeholder="placeholder || (showForm ? '描述你的诉求，例如：想带 3 岁小孩，避免长途车程' : '继续调整：例如「把第 3 天换成室内活动」')"

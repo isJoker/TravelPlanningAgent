@@ -18,7 +18,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
-from api.logger import logger
+from core.logger import logger
 
 
 def _truthy(v: Optional[str]) -> bool:

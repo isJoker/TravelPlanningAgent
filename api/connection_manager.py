@@ -18,7 +18,7 @@ from typing import Any, Dict
 
 from fastapi import WebSocket
 
-from api.logger import logger
+from core.logger import logger
 
 
 class ConnectionManager:

@@ -12,7 +12,7 @@ from typing import Any, Dict
 
 import yaml
 
-_PROMPT_FILE = Path(__file__).parents[1] / "prompt" / "prompts.yaml"
+_PROMPT_FILE = Path(__file__).parents[1] / "agent" / "prompts" / "prompts.yaml"
 _cache: Dict[str, Any] | None = None
 _VAR_RE = re.compile(r"\{(\w+)\}")
 
