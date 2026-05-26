@@ -42,6 +42,7 @@ streaming **graph nodes / tool calls / chain-of-thought** over WebSocket in real
   - [Component Tree](#component-tree)
   - [Pinia State Management](#pinia-state-management)
   - [WebSocket Client](#websocket-client)
+  - [Session Persistence & Recovery](#session-persistence--recovery)
 - [End-to-End Data Flow](#end-to-end-data-flow)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
@@ -528,15 +529,18 @@ state:
   files    : FileItem[]           // backs the right sidebar
 
 actions:
-  startNewTrip(req, displayText)  // POST /api/trip + open WS + push to history
-  sendRefine(instruction)         // POST /api/trip/{tid}/refine
-  selectThread(tid)               // switch session (reconnect WS, clear messages, refresh files)
+  startNewTrip(req, displayText)  // POST /api/trip + open WS + push to history + persist()
+  sendRefine(instruction)         // POST /api/trip/{tid}/refine + persist()
+  selectThread(tid)               // ① render slim cache from localStorage instantly
+                                  // ② reconnect WS / refresh files
+                                  // ③ GET /api/trip/{tid}/messages, merge with cache, save back
   newSession()                    // close WS, clear, return to welcome screen
 
 private:
   ensureWs(tid)                   // TripWS singleton (auto-reconnect)
   handleEvent(msg)                // route every WS event → mutate messages
   patchLogTitle(kind, name, ...)  // promote a running same-name log entry to done
+  persist()                       // write the current thread's slim messages to localStorage
 ```
 
 Event → state mapping (see `handleEvent`):
@@ -549,13 +553,14 @@ Event → state mapping (see `handleEvent`):
 | `node_start` / `node_end` | same as above with `kind=node` |
 | `review_iteration` | append a review card (passed → done, otherwise error) |
 | `partial_thought` | append an info entry |
-| `task_result` | current AI message: `content = result; files = files; status = 'done'`; then re-fetch `/api/files` |
-| `error` | append an error card + mark current AI message as error |
+| `task_result` | current AI message: `content = result; files = files; status = 'done'`; then re-fetch `/api/files` and `persist()` |
+| `error` | append an error card + mark current AI message as error; `persist()` |
 
 #### `stores/history.ts` — sessions list
 
 Holds at most 50 items, sorted by `last_active` desc, persisted to localStorage under `tpa.history.v1`.
 `startNewTrip` `upsert`s; `refine` does not reorder (the thread_id already exists).
+`remove(tid)` also drops the matching `tpa.msgs.<tid>` slim cache so no orphans pile up.
 
 ### WebSocket Client
 
@@ -566,6 +571,92 @@ The `TripWS` class in `ui/src/api/ws.ts` provides:
 - **Heartbeat**: send the literal string `"ping"` every 25s (server replies `{event:'pong'}`)
 - Event dispatch: `on(event, fn)` to subscribe; the wildcard `'*'` listens to everything
 - Singleton: `chat store::ensureWs(tid)` ensures a single connection per thread_id
+
+### Session Persistence & Recovery
+
+> How we keep messages around across thread switches and full reloads —
+> a server-authoritative endpoint plus a slim LRU client cache.
+
+#### Why
+
+`InMemorySaver` lives inside the process and is wiped on restart, while the
+early frontend only persisted `HistoryItem` metadata. Switching threads or
+hitting refresh therefore lost the actual `messages`. To get *all three* of
+"instant render", "survives reload", and "doesn't blow the 5MB quota",
+we layered two complementary stores:
+
+```mermaid
+flowchart LR
+    subgraph Server["📦 Server (authoritative)"]
+        SD["session_dir<br/>trip_v{N}.{md,pdf}"]
+        CK["InMemorySaver<br/>(channel_values)"]
+    end
+    subgraph Client["🖥️ Frontend localStorage"]
+        H["tpa.history.v1<br/>HistoryItem[] (≤50)"]
+        M["tpa.msgs.&lt;tid&gt;<br/>SlimMessage[] (LRU≤20)"]
+    end
+    SD -->|"GET /messages"| Resp["MessagesResponse"]
+    CK -->|"aget_tuple"| Resp
+    Resp --> Client
+    Client -.->|"selectThread instant render"| UI["chat store"]
+    Resp -.->|"merge: AI content overrides"| UI
+```
+
+#### Backend: `GET /api/trip/{tid}/messages`
+
+Reconstructs a slim per-version message thread the frontend uses as the
+authoritative source on switch / refresh.
+
+| Source | Provides | Survives restart |
+|--------|----------|------------------|
+| `output/session_{tid}/trip_v{N}.{md,pdf}` | AI artefacts per version | ✅ yes |
+| `InMemorySaver.channel_values` | `bot_user_input` (the v1 user prompt) and `history[].summary` | ❌ no |
+
+Response shape:
+
+```jsonc
+{
+  "thread_id": "trip-xxx",
+  "expired": false,                     // true when the session_dir is gone
+  "messages": [
+    { "id": "u-...-v1", "role": "user", "content": "...", "version": 1, "timestamp": ... },
+    { "id": "a-...-v1", "role": "ai",   "content": "v1 summary", "version": 1, "files": [...], "timestamp": ... },
+    { "id": "a-...-v2", "role": "ai",   "content": "v2 summary", "version": 2, "files": [...], "timestamp": ... }
+  ]
+}
+```
+
+> ⚠️ The backend does **not** persist each refine's user-typed text verbatim
+> (state only keeps the latest `refine_request`). That's exactly what the
+> client-side slim cache fills in.
+
+#### Frontend: per-thread `tpa.msgs.<thread_id>` slim cache
+
+Per-thread keys, an LRU bound, and dropping process traces keep the total
+localStorage footprint at the ~1 MB scale.
+
+| Dimension | Choice | Rationale |
+|-----------|--------|-----------|
+| Storage key | `tpa.msgs.<tid>` (one key per thread) | Mutating one thread does not re-serialise everything |
+| LRU bound | `SLIM_THREAD_LIMIT = 20` | Trim oldest by `tpa.history.v1.last_active` |
+| Persisted fields | `id / role / content / files / version / timestamp / status` | User text + AI summary + artefacts — enough to rebuild the UI |
+| Dropped fields | `logs[]`, `partial_thought`, streaming placeholders | Process events are meaningless after reload and dominate the size |
+| Save triggers | `task_result`, `error`, `startNewTrip`, `sendRefine` | All boundaries where a message transitions from streaming → settled |
+
+`selectThread(tid)` runs in three phases:
+
+1. **Instant render** — read the slim cache from `localStorage` into
+   `messages.value` so the user sees something immediately.
+2. **Reconnect** — `ensureWs(tid)` + `refreshFiles()`.
+3. **Reconcile** — call `GET /api/trip/{tid}/messages`, align with the cache
+   by `version`, take server as truth for AI fields and cache as truth for
+   user messages (including refine texts), then write the merged result
+   back to `tpa.msgs.<tid>`. When `expired=true`, the matching history
+   entry is flagged so the user can still browse the cached preview.
+
+> The async `loadMessages` is guarded by a `threadId.value !== tid` check
+> after it resolves, so rapid thread switches discard stale responses
+> without flicker.
 
 ---
 
@@ -741,6 +832,7 @@ The demo runs without any PDF engine — only Markdown is produced in that case.
 | `POST` | `/api/trip` | Start a new plan task → `{trip_id, thread_id, status, version}` |
 | `POST` | `/api/trip/{thread_id}/refine` | Submit a refine instruction |
 | `GET`  | `/api/trip/{thread_id}/versions` | List MD/PDF artefacts per version |
+| `GET`  | `/api/trip/{thread_id}/messages` | Reconstruct the chat thread (user prompt + per-version AI summaries + files); `expired=true` when the session dir is gone |
 | `GET`  | `/api/files?thread_id=X` | List every file in the session output dir |
 | `GET`  | `/api/download?path=ABS` | Download a file (path-confined to `output/`) |
 | `WS`   | `/ws/{thread_id}` | Server→client event stream |
@@ -800,6 +892,7 @@ tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../ref
 
 1. **InMemorySaver** isolates state by `thread_id` for the lifetime of the process.
    On restart, in-flight conversations expire (the frontend localStorage still lists them, but a new instruction starts a fresh plan).
+   Thread switches and full reloads keep their messages — see [Session Persistence & Recovery](#session-persistence--recovery).
 2. **MOCK_LLM** returns structurally valid stub JSON for all 4 prompt kinds, so the graph runs to completion fully offline.
 3. **Mock tools** seed their RNG from the input hash → **fully deterministic** output, ideal for screenshots and tests.
 4. POI fixtures ship for **Tokyo / Beijing / Osaka**; other cities fall through to a Faker-synthesised pool.

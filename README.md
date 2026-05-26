@@ -42,6 +42,7 @@
   - [组件树](#组件树)
   - [Pinia 状态管理](#pinia-状态管理)
   - [WebSocket 客户端](#websocket-客户端)
+  - [会话持久化与恢复](#会话持久化与恢复)
 - [端到端数据流](#端到端数据流)
 - [快速开始](#快速开始)
 - [配置项](#配置项)
@@ -526,15 +527,18 @@ state:
   files    : FileItem[]           // 右侧栏数据源
 
 actions:
-  startNewTrip(req, displayText)  // POST /api/trip + 建 WS + 推 history
-  sendRefine(instruction)         // POST /api/trip/{tid}/refine
-  selectThread(tid)               // 切换会话（重连 WS、清空消息、刷新文件）
+  startNewTrip(req, displayText)  // POST /api/trip + 建 WS + 推 history + persist()
+  sendRefine(instruction)         // POST /api/trip/{tid}/refine + persist()
+  selectThread(tid)               // ① 加载 localStorage 瘦身缓存秒显
+                                  // ② 重连 WS / 刷新文件
+                                  // ③ GET /api/trip/{tid}/messages 与缓存合并回写
   newSession()                    // 关 WS、清空、回欢迎页
 
 私有:
   ensureWs(tid)                   // TripWS 单例（自动重连）
   handleEvent(msg)                // 路由所有 WS 事件 → 修改 messages
   patchLogTitle(kind, name, ...)  // 把同名 running 日志条目改为 done
+  persist()                       // 把当前线程的"瘦身版" messages 写入 localStorage
 ```
 
 事件 → 状态 映射规则（见 `handleEvent`）：
@@ -547,13 +551,14 @@ actions:
 | `node_start` / `node_end` | 同上，但 kind=node |
 | `review_iteration` | append review 卡片（passed → done，否则 error） |
 | `partial_thought` | append 一条 info |
-| `task_result` | 当前 AI 消息：`content = result; files = files; status = 'done'`；并刷新 `/api/files` |
-| `error` | append error 卡片 + 标记当前 AI 消息为 error |
+| `task_result` | 当前 AI 消息：`content = result; files = files; status = 'done'`；并刷新 `/api/files`、`persist()` |
+| `error` | append error 卡片 + 标记当前 AI 消息为 error；`persist()` |
 
 #### `stores/history.ts` — 历史会话
 
 最多保留 50 条，按 `last_active` 倒序，持久化到 `localStorage` 的 `tpa.history.v1` 键。
 `startNewTrip` 时 `upsert`，`refine` 不会改变历史顺序（thread_id 已存在）。
+`remove(tid)` 同时清理对应的 `tpa.msgs.<tid>` 缓存。
 
 ### WebSocket 客户端
 
@@ -564,6 +569,83 @@ actions:
 - **心跳**：每 25 秒发送 `"ping"` 字符串（后端会回 `{event:'pong'}`）
 - 事件分发：`on(event, fn)` 订阅；`'*'` 监听所有事件
 - 单例：`chat store::ensureWs(tid)` 保证同一 thread_id 复用同一连接
+
+### 会话持久化与恢复
+
+> 切换或刷新会话时如何"不丢消息"——后端补一个权威接口，前端用瘦身 LRU 缓存秒显。
+
+#### 设计动机
+
+`InMemorySaver` 进程内保存 LangGraph state，进程重启即丢；
+而前端早期只在 `localStorage` 里缓存了 `HistoryItem` 元数据，切换会话或刷新页面会清空 `messages`。
+为同时满足"秒开 / 跨刷新 / 不爆配额"三个目标，引入两层互补：
+
+```mermaid
+flowchart LR
+    subgraph Server["📦 服务端权威源"]
+        SD["session_dir<br/>trip_v{N}.{md,pdf}"]
+        CK["InMemorySaver<br/>(channel_values)"]
+    end
+    subgraph Client["🖥️ 前端 localStorage"]
+        H["tpa.history.v1<br/>HistoryItem[] (≤50)"]
+        M["tpa.msgs.&lt;tid&gt;<br/>SlimMessage[] (LRU≤20)"]
+    end
+    SD -->|"GET /messages"| Resp["MessagesResponse"]
+    CK -->|"aget_tuple"| Resp
+    Resp --> Client
+    Client -.->|"selectThread 秒显"| UI["chat store"]
+    Resp -.->|"merge 覆盖 AI 内容"| UI
+```
+
+#### 后端：`GET /api/trip/{tid}/messages`
+
+按版本组装出一份"瘦身"消息流，给前端做切换/刷新时的权威源。
+
+| 数据来源 | 提供什么 | 存活性 |
+|---------|---------|--------|
+| `output/session_{tid}/trip_v{N}.{md,pdf}` | 各版本 AI 产出文件 | ✅ 跨重启保留 |
+| `InMemorySaver.channel_values` | `bot_user_input` (v1 用户输入)、`history[].summary` | ❌ 进程内 |
+
+返回结构：
+
+```jsonc
+{
+  "thread_id": "trip-xxx",
+  "expired": false,                     // true 表示 session_dir 已不存在
+  "messages": [
+    { "id": "u-...-v1", "role": "user", "content": "...", "version": 1, "timestamp": ... },
+    { "id": "a-...-v1", "role": "ai",   "content": "v1 摘要", "version": 1, "files": [...], "timestamp": ... },
+    { "id": "a-...-v2", "role": "ai",   "content": "v2 摘要", "version": 2, "files": [...], "timestamp": ... }
+  ]
+}
+```
+
+> ⚠️ 后端不持久化每次 refine 的用户输入文本（state 仅保留最新一条 `refine_request`）。
+> 这正是"前端瘦身缓存"补充的部分。
+
+#### 前端：`tpa.msgs.<thread_id>` 瘦身缓存
+
+按线程拆 key、按数量做 LRU、丢弃过程事件，把 localStorage 占用钉死在 ~1 MB 量级。
+
+| 维度 | 选择 | 原因 |
+|------|------|------|
+| 存储键 | `tpa.msgs.<tid>` 单线程一 key | 改某线程不会引发全量序列化 |
+| LRU 上限 | `SLIM_THREAD_LIMIT = 20` | 超出按 `tpa.history.v1.last_active` 顺序裁剪 |
+| 持久字段 | `id / role / content / files / version / timestamp / status` | 用户文字 + AI 摘要 + 产物，跨刷新足以重建 UI |
+| 丢弃字段 | `logs[]`、`partial_thought`、streaming 占位 | 过程事件刷新后无意义；占主要体积 |
+| 触发点 | `task_result`、`error`、`startNewTrip`、`sendRefine` | 都是消息从 streaming → settled 的边界 |
+
+`selectThread(tid)` 走三段式：
+
+1. **秒显**：从 `localStorage` 读瘦身缓存写入 `messages.value`，立即可见。
+2. **重连**：`ensureWs(tid)` + `refreshFiles()`。
+3. **校准**：`GET /api/trip/{tid}/messages` 拉权威列表，与缓存按 `version` 对齐合并；
+   AI 字段以服务端为准，用户消息（含 refine 文本）以缓存为准；
+   合并结果写回 `tpa.msgs.<tid>`。
+   响应中 `expired=true` 时，把对应历史项标记为已过期，但保留缓存让用户仍能查看。
+
+> 切线程发起的 `loadMessages` 是异步的；返回前若用户又点了别的线程，
+> `chat store` 用 `threadId.value !== tid` 守卫直接丢弃过期响应，避免 UI 抖动。
 
 ---
 
@@ -739,6 +821,7 @@ VITE_WS_BASE=ws://localhost:8000
 | `POST` | `/api/trip` | 启动新规划 → `{trip_id, thread_id, status, version}` |
 | `POST` | `/api/trip/{thread_id}/refine` | 提交调整指令 |
 | `GET`  | `/api/trip/{thread_id}/versions` | 列出 MD/PDF 各版本 |
+| `GET`  | `/api/trip/{thread_id}/messages` | 重建会话消息（用户输入 + 各版本 AI 摘要 + 文件）；`expired=true` 表示 session 目录已不存在 |
 | `GET`  | `/api/files?thread_id=X` | 列出该会话目录下所有文件 |
 | `GET`  | `/api/download?path=ABS` | 下载文件（路径限定在 `output/` 内） |
 | `WS`   | `/ws/{thread_id}` | 服务端→客户端事件流 |
@@ -798,6 +881,7 @@ tests/smoke/smoke_http.py    /api/health + /api/trip + /api/files + /api/.../ref
 
 1. **InMemorySaver** 在进程内按 `thread_id` 隔离 State；
    后端重启后历史会话失效（前端 localStorage 仍记录，但新指令会触发全新规划）。
+   切换/刷新会话时不会丢消息——参见 [会话持久化与恢复](#会话持久化与恢复)。
 2. **MOCK_LLM** 对 4 类 prompt 都返回结构合规的桩 JSON，离线即可全图跑通。
 3. **Mock 工具**输出由输入哈希做种子，**完全确定性**，便于截图与冒烟。
 4. POI fixtures 自带 **东京 / 北京 / 大阪**；其他城市走 Faker 合成池。
