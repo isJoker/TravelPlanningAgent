@@ -191,7 +191,7 @@ TravelPlanningAgent/
 │   ├── nodes.py                   plan-graph nodes (fetch / plan / 3 generators / review / render)
 │   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher_router
 │   ├── _timed.py                  Shared @timed decorator (DRY across plan + refine nodes)
-│   ├── agents.py                  7 LLM sub-agents (independent LLM instances)
+│   ├── agents.py                  7 LLM sub-agents (share one build_llm() singleton, differentiated by prompt)
 │   ├── state.py                   TripState (TypedDict + Annotated reducers)
 │   └── prompts/
 │       └── prompts.yaml           7 prompt templates (4 plan + 3 skill-style: pack_list / cultural_tips / pre_trip_checklist)
@@ -441,6 +441,10 @@ sequenceDiagram
 - `load_previous_state` calls `saver.aget_tuple(config)` to read `version`, then bumps it by 1
 
 > ⚠️ **Limitation**: InMemorySaver state is lost on process restart.
+> The `output/session_{tid}/` directory survives, but the in-memory state is gone — if the
+> user fires a refine against the old thread, `load_previous_state` immediately raises
+> `RefineStateMissingError` and pushes a single `error` event over WebSocket
+> ("session state lost, please start a fresh plan") instead of KeyError'ing deep in a downstream node.
 > Upgrade path: swap `core/checkpointer.py::get_checkpointer()` to `SqliteSaver` or a custom Postgres saver.
 > The interface is fully compatible — no business code changes.
 
@@ -453,7 +457,7 @@ sequenceDiagram
 | `MockLLM` | `MOCK_LLM=true` (default) or no `OPENAI_API_KEY` | Returns **structurally valid stub JSON** keyed off prompt markers (one shape per prompt kind, 7 in total) |
 | `RealLLM` | `MOCK_LLM=false` with a key | LangChain 1.0 `init_chat_model("gpt-4o", model_provider="openai", ...)` |
 
-`agent/agents.py` instantiates an independent LLM per sub-agent so they can be swapped to different models later:
+All 7 sub-agents in `agent/agents.py` **share the process-wide singleton returned by `build_llm()`**; the differentiator is each sub-agent's prompt template, not its model object. Earlier revisions kept seven `_llm_xxx` variables, which read as "one model per agent" but at runtime were always the same cached instance — misleading. To swap models per sub-agent, make `build_llm()` dispatch by agent name:
 
 | Sub-agent | Called from | Input → Output |
 |-----------|-------------|----------------|
@@ -826,6 +830,11 @@ AMAP_API_KEY=
 HOST=0.0.0.0
 PORT=8000
 ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+# Note: if set to * (the default for local demos), the backend automatically
+# disables allow_credentials and logs a WARN — browsers reject the
+# "Access-Control-Allow-Origin: *" + credentials=true combination per spec.
+# Any deployment that relies on cookies / Authorization headers must list
+# explicit origins here.
 
 # ===== PDF engine (optional) =====
 # PDF_ENGINE=pandoc | weasyprint | word    # leave unset for auto-selection
