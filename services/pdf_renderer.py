@@ -257,12 +257,15 @@ def _convert_with_word_com(md_path: Path, pdf_path: Path) -> Tuple[bool, str]:
     if not _check_markdown_available():
         return False, "缺少 markdown 依赖，请执行: pip install markdown"
 
+    # Dependency check (kept narrow — _check_win32com_available short-circuits
+    # the non-Windows path, but we still want a clean error rather than a
+    # later NameError if the import fails for any reason).
     try:
         import markdown
-        import win32com.client
         import pythoncom
-    except ImportError:
-        pass
+        import win32com.client
+    except ImportError as e:
+        return False, f"Word COM 引擎依赖导入失败: {e}"
 
     temp_html_path = md_path.with_suffix('.temp.html')
     word_app = None
@@ -565,12 +568,19 @@ def render_report(
 
 
 # ============================================================
-#  CLI test mode: `python -m services.pdf_renderer path/to/file.md`
+#  CLI test mode: `python -m services.pdf_renderer path/to/file.md [out.pdf]`
 # ============================================================
 
 if __name__ == "__main__":
-    project_root_path = Path(__file__).parents[1].resolve()
-    source_file_path = project_root_path / "output/session_trip-c9baf0cd/trip_v1.md"
-    target_file_path = project_root_path / "output/session_trip-c9baf0cd/trip_v1.pdf"
-    result = convert_md_to_pdf_real(Path(source_file_path), Path(target_file_path))
-    print(result)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Convert a Markdown file to PDF.")
+    parser.add_argument("source", type=Path, help="Path to the input .md file")
+    parser.add_argument("target", type=Path, nargs="?", help="Output PDF path")
+    parser.add_argument(
+        "--engine",
+        choices=("word", "pandoc", "weasyprint"),
+        help="Force a specific engine (default: auto-detect).",
+    )
+    args = parser.parse_args()
+    print(convert_md_to_pdf_real(args.source, args.target, engine=args.engine))

@@ -189,7 +189,7 @@ TravelPlanningAgent/
 │   ├── nodes.py                   plan-graph 节点（fetch / plan / 3 个 generator / review / render）
 │   ├── refine_nodes.py            load_previous_state / parse_refine_intent / dispatcher_router
 │   ├── _timed.py                  共享 @timed 装饰器（plan + refine 节点共用）
-│   ├── agents.py                  7 个 LLM 子 agent（独立 LLM 实例）
+│   ├── agents.py                  7 个 LLM 子 agent（共用 build_llm() 单例 + 各自 prompt）
 │   ├── state.py                   TripState (TypedDict + Annotated reducer)
 │   └── prompts/
 │       └── prompts.yaml           7 个集中式提示词模板（plan 4 个 + skill 风格 3 个：pack_list / cultural_tips / pre_trip_checklist）
@@ -439,6 +439,9 @@ sequenceDiagram
 - `load_previous_state` 通过 `saver.aget_tuple(config)` 读取 `version`，新版本号 `+1`
 
 > ⚠️ **限制**：进程重启后 InMemorySaver 状态全部丢失。
+> 此时 `output/session_{tid}/` 还在，但 `state` 已没了 —— 用户若直接对老会话发起 refine，
+> `load_previous_state` 会立刻抛 `RefineStateMissingError` 并通过 WebSocket 推一条
+> `error` 事件（"会话状态已丢失，请重新发起一次完整规划"），不会跑到下游再 KeyError。
 > 升级路径：把 `core/checkpointer.py::get_checkpointer()` 切到 `SqliteSaver` / 自定义 PostgresSaver，
 > 接口完全兼容，无需改业务代码。
 
@@ -451,7 +454,7 @@ sequenceDiagram
 | `MockLLM` | `MOCK_LLM=true`（默认）或缺 `OPENAI_API_KEY` | 按 prompt 关键词返回**结构化合规**的桩 JSON（7 种 prompt 各一种） |
 | `RealLLM` | `MOCK_LLM=false` 且有 key | LangChain 1.0 `init_chat_model("gpt-4o", model_provider="openai", ...)` |
 
-`agent/agents.py` 中 7 个子 agent 各持有独立 LLM 实例，方便后续切不同模型：
+`agent/agents.py` 中 7 个子 agent **共用 `build_llm()` 返回的进程级单例**，差异化只在各自的 prompt 模板上 —— 早期版本曾把 `_llm_xxx` 拆成 7 个变量，但 `build_llm()` 内部会 cache 同一个实例，拆变量只会让代码看起来"每个 agent 有自己的模型"，运行时其实仍是同一个对象，反而误导 reader。要切不同模型时，改 `build_llm()` 让它按 agent 名分发即可：
 
 | 子 agent | 调用节点 | 输入 → 输出 |
 |---------|---------|------------|
@@ -815,8 +818,9 @@ AMAP_API_KEY=
 HOST=0.0.0.0
 PORT=8000
 ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-
-# ===== PDF 引擎（可选）=====
+# 注：若设为 *（默认值，仅本地 demo 方便），后端会自动把 allow_credentials 关掉
+# 并打 WARN —— 浏览器规范禁止 "Access-Control-Allow-Origin: *" 与 credentials=true 同时出现。
+# 任何要带 cookie / Authorization 的部署都请显式列出 origin。
 # PDF_ENGINE=pandoc | weasyprint | word    # 不设则自动选择
 ```
 

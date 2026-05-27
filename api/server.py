@@ -5,9 +5,10 @@ import asyncio
 import os
 import time
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Coroutine, Dict, List
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -44,6 +45,35 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 
 manager = ConnectionManager()
 
+# ---------- background task plumbing ----------
+# Hold strong refs to fire-and-forget tasks. Without this, the asyncio task
+# returned by ``asyncio.create_task`` is only weakly referenced by the loop
+# and can be garbage-collected mid-execution (see Python docs §asyncio.Task).
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+# Per-thread async locks so that a refine cannot start while a plan or another
+# refine for the same thread_id is still running. DESIGN.md §4.4.5 explicitly
+# calls for this: concurrent writes to the same checkpoint corrupt state.
+_thread_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _spawn(
+    name: str,
+    thread_id: str,
+    coro_factory: Callable[[], Coroutine[Any, Any, Any]],
+) -> asyncio.Task[Any]:
+    """Run ``coro_factory()`` under the per-thread lock and track the task."""
+
+    async def _runner() -> None:
+        lock = _thread_locks[thread_id]
+        async with lock:
+            await coro_factory()
+
+    task = asyncio.create_task(_runner(), name=f"{name}:{thread_id}")
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,12 +91,24 @@ app = FastAPI(title="Travel Planning Agent (Demo)", version="0.3.0", lifespan=li
 
 _origins_env = os.getenv("ALLOW_ORIGINS", "*")
 _origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+# Browsers reject ``Access-Control-Allow-Origin: *`` together with
+# ``Access-Control-Allow-Credentials: true``. When the user has configured a
+# wildcard (the demo default), force ``allow_credentials=False`` so the
+# preflight response is at least valid; otherwise honour their explicit
+# origin list.
+_wildcard_origins = (not _origins) or "*" in _origins
+if _wildcard_origins:
+    logger.warning(
+        "ALLOW_ORIGINS contains '*' — disabling allow_credentials so the "
+        "browser CORS check passes. Set ALLOW_ORIGINS to an explicit list "
+        "(e.g. http://localhost:5173) to enable credentialed requests."
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins or ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
+    allow_credentials=not _wildcard_origins,
 )
 
 
@@ -76,13 +118,16 @@ def _session_dir_for(thread_id: str) -> Path:
 
 
 def _safe_path(p: str) -> Path:
-    """Resolve a download path while ensuring it stays inside OUTPUT_DIR."""
+    """Resolve a download path while ensuring it stays inside OUTPUT_DIR.
+
+    Uses ``Path.is_relative_to`` (Python 3.9+) which is symmetric with how
+    we expose paths back via ``_file_item`` and clearer than catching
+    ``ValueError`` from ``relative_to``.
+    """
     target = Path(p).resolve()
-    try:
-        target.relative_to(OUTPUT_DIR)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail="path outside allowed root") from e
-    if not target.exists():
+    if not target.is_relative_to(OUTPUT_DIR):
+        raise HTTPException(status_code=403, detail="path outside allowed root")
+    if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     return target
 
@@ -122,14 +167,20 @@ async def create_trip(req: TripRequest) -> TripResponse:
     payload = req.model_dump()
     payload["conversation_name"] = thread_id
 
-    asyncio.create_task(run_plan_agent(payload, thread_id, trip_id=trip_id))
+    _spawn("plan", thread_id, lambda: run_plan_agent(payload, thread_id, trip_id=trip_id))
     return TripResponse(trip_id=trip_id, thread_id=thread_id, status="started", version=1)
 
 
 @app.post("/api/trip/{thread_id}/refine", response_model=TripResponse)
 async def refine_trip(thread_id: str, req: RefineRequest) -> TripResponse:
     trip_id = f"trp_{uuid.uuid4().hex[:10]}"
-    asyncio.create_task(run_refine_agent(req.instruction, thread_id, trip_id=trip_id))
+    _spawn(
+        "refine",
+        thread_id,
+        lambda: run_refine_agent(req.instruction, thread_id, trip_id=trip_id),
+    )
+    # version=0 signals "to-be-determined" — the actual new version is reported
+    # via the ``task_result`` WebSocket event once the refine graph completes.
     return TripResponse(trip_id=trip_id, thread_id=thread_id, status="started", version=0)
 
 
@@ -289,9 +340,10 @@ async def ws_endpoint(websocket: WebSocket, thread_id: str) -> None:
             if msg == "ping":
                 await websocket.send_json({"event": "pong", "data": {}})
     except WebSocketDisconnect:
-        manager.disconnect(websocket, thread_id)
+        pass  # normal client close
     except Exception as e:  # pragma: no cover
         logger.warning(f"[WS] handler error thread_id={thread_id}: {e}")
+    finally:
         manager.disconnect(websocket, thread_id)
 
 

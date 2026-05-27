@@ -9,8 +9,20 @@ from typing import Any, Dict, List
 
 from core.checkpointer import get_checkpointer
 from core.logger import logger
+from core.monitor import monitor
 from agent import agents
 from agent._timed import timed as _timed
+
+
+class RefineStateMissingError(RuntimeError):
+    """Raised when the saver has no checkpoint for the requested thread_id.
+
+    Most commonly this happens after a process restart: ``InMemorySaver`` is
+    in-process and does not persist across runs, so a previously-finished
+    plan is gone even though its files remain on disk. We surface this so
+    the API layer can tell the user to start a new plan rather than
+    silently failing deep inside ``plan_itinerary``.
+    """
 
 
 # ============================================================
@@ -37,7 +49,7 @@ async def load_previous_state(state: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning(f"load_previous_state: aget_tuple() failed: {e}")
         snap = None
 
-    prev_version = 1
+    channel_values: Dict[str, Any] = {}
     if snap is not None:
         # CheckpointTuple in LangGraph 1.0: dataclass-like with a .checkpoint
         # attribute (a Checkpoint TypedDict) that holds channel_values. We
@@ -50,12 +62,27 @@ async def load_previous_state(state: Dict[str, Any]) -> Dict[str, Any]:
             channel_values = (checkpoint or {}).get("channel_values", {}) or {}
         except Exception:
             channel_values = {}
-        prev_version = int(channel_values.get("version", 1))
 
+    # Detect a missing/stale state — InMemorySaver is process-local, so a
+    # surviving session_dir on disk does not imply we still have the plan
+    # state. Without ``destination`` / ``days_num`` the downstream nodes
+    # would KeyError; surface a clean message instead.
+    if not channel_values.get("destination") or not channel_values.get("days_num"):
+        msg = (
+            "会话状态已丢失（InMemorySaver 是进程内存储，重启后不保留 state）。"
+            "请重新发起一次完整规划，再做调整。"
+        )
+        monitor.report_error("load_previous_state", msg)
+        raise RefineStateMissingError(msg)
+
+    prev_version = int(channel_values.get("version", 1))
     new_version = prev_version + 1
     return {
         "version": new_version,
         "retry_count": 0,
+        # Reset the review pass flag so review_plan_lite is treated as a
+        # fresh check (the previous run will have left ``review_passed=True``).
+        "review_passed": False,
         "_summary": f"加载 v{prev_version} → 计划生成 v{new_version}",
     }
 
